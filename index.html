@@ -226,6 +226,13 @@
      beneath it so it is the last visible thing, not floating above empty space. */
   .wrap > .pagefooter { margin-bottom: -64px; padding-bottom: 8px; }
   @media (max-width: 920px) { .wrap > .pagefooter { margin-bottom: -48px; } }
+  /* monospace "code" link in the footer, pointing at the public source repo */
+  .pagefooter .codelink, #lastUpdated .codelink {
+    font-family: var(--mono); color: var(--accent); text-decoration: none;
+    border-bottom: 1px dotted var(--accent); padding-bottom: 1px; }
+  .pagefooter .codelink::before, #lastUpdated .codelink::before { content: "<"; opacity: .5; }
+  .pagefooter .codelink::after, #lastUpdated .codelink::after { content: "/>"; opacity: .5; }
+  .pagefooter .codelink:hover, #lastUpdated .codelink:hover { color: var(--ink); border-color: var(--ink); }
 
   /* ---- N-way plotter-pen palette (kept on the same class names) ---- */
   .pal0{--c:#1f5f6b;} .pal1{--c:#b8761b;} .pal2{--c:#7a3f7d;}
@@ -2169,6 +2176,24 @@ renderPareto();
     src.textContent = when ? ("last updated " + when + " (local copy)") : "last updated: local copy";
   }
   const text = src ? src.textContent : "";
+  const REPO = "https://github.com/chrishwiggins/shannon-language-model";
+
+  // Append a monospace "code" link (rendered as <code/> via CSS) after a date
+  // string in a footer node, so every page bottom links to the public source.
+  function withCodeLink(node, dateText) {
+    node.textContent = dateText + " · ";
+    const a = document.createElement("a");
+    a.className = "codelink";
+    a.href = REPO;
+    a.target = "_blank";
+    a.rel = "noopener";
+    a.textContent = "code";
+    node.appendChild(a);
+  }
+
+  // The original #lastUpdated line in the About tab gets the link too.
+  if (src) withCodeLink(src, text);
+
   // The demo tabs (designed/paste/url/standard) show their main content in .wrap;
   // their sp-* panels are just a small input area at the TOP, so a footer there
   // would land mid-page. Put the footer only in .wrap for those, and in the prose
@@ -2179,7 +2204,7 @@ renderPareto();
     if (!t || t.id === "sp-about" || demoInputPanels.has(t.id)) return;
     const f = document.createElement("p");
     f.className = "hint pagefooter";
-    f.textContent = text;
+    withCodeLink(f, text);
     t.appendChild(f);
   });
 })();

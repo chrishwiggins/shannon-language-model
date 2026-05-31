@@ -1,4 +1,4 @@
-# How a Language Model Walks
+# How a (small) language model walks
 
 A teaching demo for the simplest possible language model: a **bigram Markov chain**.
 A bigram model is a map (each word points to the words seen right after it); generating
