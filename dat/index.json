@@ -1,0 +1,9 @@
+[
+  { "id": "markov-onegin",      "label": "Pushkin - Eugene Onegin (Markov's 1913 text)", "file": "markov-onegin.txt" },
+  { "id": "bible-genesis",      "label": "Bible (KJV) - Genesis 1", "file": "bible-genesis.txt" },
+  { "id": "shakespeare-hamlet", "label": "Shakespeare - Hamlet soliloquy", "file": "shakespeare-hamlet.txt" },
+  { "id": "shakespeare-sonnet18","label": "Shakespeare - Sonnet 18", "file": "shakespeare-sonnet18.txt" },
+  { "id": "columbia-mission",   "label": "Columbia University mission statement", "file": "columbia-mission.txt" },
+  { "id": "house-jack",         "label": "The House That Jack Built (1755)", "file": "house-jack.txt" },
+  { "id": "ring-roses",         "label": "Ring a Ring o' Roses", "file": "ring-roses.txt" }
+]

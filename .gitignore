@@ -1,0 +1,25 @@
+# Local-only copyrighted analysis inputs (never publish)
+dat/seuss-source.txt
+dat/seuss-experiments/
+src/seuss-min-excerpt.py
+src/seuss-pareto.py
+src/seuss-pareto-rate.py
+
+# Build output (regenerate with src/build-static.py)
+out/
+
+# Python caches
+__pycache__/
+*.pyc
+.mypy_cache/
+.ruff_cache/
+
+# Tooling / deploy local state
+.playwright-mcp/
+.wrangler/
+.claude/
+
+# OS + logs
+.DS_Store
+*.log
+*.tif

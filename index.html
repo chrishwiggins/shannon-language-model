@@ -1,0 +1,2178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How a Language Model Walks</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231a1d24'/%3E%3Cline x1='9' y1='10' x2='23' y2='10' stroke='%235cc8c0' stroke-width='2'/%3E%3Cline x1='9' y1='10' x2='16' y2='22' stroke='%23f0a868' stroke-width='2'/%3E%3Ccircle cx='9' cy='10' r='3' fill='%23f0a868'/%3E%3Ccircle cx='23' cy='10' r='3' fill='%235cc8c0'/%3E%3Ccircle cx='16' cy='22' r='3' fill='%23b48ce0'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,400;0,500;0,600;1,400&family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  /* =================================================================
+     Aesthetic: a 1948 Bell Labs technical monograph rendered as a live
+     instrument. Spectral/Fraunces serif for prose and figure titles,
+     IBM Plex Mono for the token machinery and the graph. Ink on warm
+     paper; hairline rules; plotter-pen inks for the branch colors;
+     printed figure-number labels. Light, typeset, restrained motion.
+     This is a STYLE layer only -- every class the JS touches keeps its
+     name, so the model/walk logic is untouched.
+     ================================================================= */
+  :root {
+    --bg: #f4efe4; /* warm paper */
+    --bg2: #efe8d8; /* deeper paper (margins, gutters) */
+    --panel: #fbf8f0; /* a printed plate, slightly brighter than the page */
+    --panel2: #f0e9da; /* recessed field (inputs, chips) */
+    --ink: #1c1a17; /* near-black ink */
+    --ink2: #3a352e; /* body ink */
+    --muted: #6e6456; /* faded marginalia (darkened to clear WCAG AA 4.5:1 on paper) */
+    --line: #d8cdb6; /* hairline rule */
+    --line2: #c4b89c; /* heavier rule */
+    --accent: #9a2f1f; /* vermilion -- the "current word" / red printer pass */
+    --opt0: #1f5f6b; /* pen 1: deep teal */
+    --opt1: #b8761b; /* pen 2: ochre */
+    --stop: #7a3f7d; /* pen: plum (the hidden STOP) */
+    --good: #2f6b3a; /* field green */
+    --bad: #9a2f1f;
+    --warn: #9a6a14;
+    --serif: "Spectral", Georgia, "Times New Roman", serif;
+    --display:"Fraunces", "Spectral", Georgia, serif;
+    --mono: "IBM Plex Mono", "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { overflow-x: hidden; max-width: 100%; }
+  html, body {
+    margin: 0; background: var(--bg); color: var(--ink2);
+    font: 16px/1.6 var(--serif);
+    -webkit-font-smoothing: antialiased;
+    /* faint paper grain + a hair of vignette so it doesn't read as flat #fff */
+    background-image:
+      radial-gradient(ellipse 120% 80% at 50% -10%, rgba(255,255,255,.5), transparent 60%),
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='.035'/%3E%3C/svg%3E");
+  }
+  ::selection { background: rgba(154,47,31,.18); }
+
+  /* ---- masthead: a journal title block ---- */
+  header {
+    padding: 30px 40px 18px; border-bottom: 2px solid var(--ink);
+    background: var(--bg);
+  }
+  h1 {
+    margin: 0 0 10px; font-family: var(--display); font-weight: 600;
+    font-size: clamp(24px, 3.4vw, 38px); line-height: 1.1; letter-spacing: -.015em;
+    color: var(--ink); max-width: 100%; text-wrap: balance; text-align: center;
+  }
+  header p {
+    /* Centered block, text left-aligned. Capping the measure for readability but
+       centering the block (margin-inline:auto) balances the left/right margins,
+       so it never reads as a hardcoded break the way a left-pinned 74ch column
+       did (dead right margin). Text inside stays left-aligned for easy reading. */
+    margin: 0 auto; color: var(--ink2); max-width: 92ch; font-size: 14.5px; line-height: 1.62; text-align: center;
+    text-wrap: pretty;
+  }
+  header p b { color: var(--accent); font-weight: 600; }
+
+  .wrap { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 20px; padding: 26px 40px 64px; max-width: 1280px; }
+  @media (max-width: 920px) { .wrap { grid-template-columns: minmax(0,1fr); padding: 22px 22px 48px; } header { padding: 22px 22px 16px; } }
+  .panel { min-width: 0; } /* let grid children shrink instead of forcing track width */
+
+  /* ---- panels as printed figure-plates ---- */
+  .panel {
+    background: var(--panel); border: 1px solid var(--line2); border-radius: 2px;
+    padding: 18px 20px 20px; min-height: 60px; position: relative;
+    box-shadow: 1px 2px 0 rgba(28,26,23,.06);
+  }
+  .panel h2 {
+    margin: 0 0 12px; font-family: var(--mono); font-size: 11px; letter-spacing: .16em;
+    text-transform: uppercase; color: var(--muted); font-weight: 600;
+    padding-bottom: 7px; border-bottom: 1px solid var(--line);
+  }
+  .full { grid-column: 1 / -1; }
+
+  /* ---- training text: the model's corpus, set like body copy ---- */
+  #training { line-height: 2.3; font-size: 17px; font-family: var(--serif); color: var(--ink2); }
+  .tok {
+    display: inline-block; padding: 1px 4px; margin: 0 1px; border-radius: 2px;
+    transition: background .15s, color .15s, box-shadow .15s, transform .15s;
+  }
+  .tok.period { opacity: .5; margin-left: -3px; padding-left: 0; }
+  .tok.occ-faint { background: rgba(154,47,31,.12); }
+  .tok.cursor {
+    background: var(--accent); color: #fbf3ec; font-weight: 600;
+    box-shadow: 0 0 0 2px rgba(154,47,31,.28); transform: translateY(-1px);
+  }
+  .tok.cand0 { box-shadow: inset 0 0 0 2px var(--opt0); }
+  .tok.cand1 { box-shadow: inset 0 0 0 2px var(--opt1); }
+  .tok.chosen { animation: pop .35s ease; }
+  @keyframes pop { 0%{transform:scale(1);} 40%{transform:scale(1.16);} 100%{transform:scale(1);} }
+
+  /* ---- generated output: typewriter / teletype line ---- */
+  #output { font-family: var(--mono); font-size: 17px; line-height: 2; min-height: 40px; letter-spacing: -.01em; }
+  #output .gen { display: inline-block; margin: 0 2px; padding: 0 2px; border-radius: 2px; }
+  #output .gen.punct { margin-left: -2px; }
+  #output .gen.start { color: var(--accent); font-weight: 600; }
+  #output .caret { color: var(--accent); animation: blink 1.05s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* ---- branch widget ---- */
+  #branch { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-height: 38px; }
+  .chip {
+    padding: 5px 13px; border-radius: 2px; font-size: 14px; border: 1px solid var(--line2);
+    background: var(--panel2); font-family: var(--mono); letter-spacing: -.01em;
+  }
+  .chip.from { background: var(--accent); color: #fbf3ec; font-weight: 600; border-color: var(--accent); }
+  .chip.o0 { border-color: var(--opt0); color: var(--opt0); }
+  .chip.o1 { border-color: var(--opt1); color: var(--opt1); }
+  .chip.ostop { border-color: var(--stop); color: var(--stop); }
+  .chip.picked { box-shadow: 0 0 0 2px currentColor; font-weight: 700; }
+  .arrow { color: var(--muted); font-family: var(--mono); }
+
+  /* ---- controls: a brass-instrument console row ---- */
+  #controls { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; }
+  /* on-screen +/- fallback for the arrow keys (click/touch) */
+  .nudgegroup { display: inline-flex; align-items: center; gap: 4px; font-family: var(--mono); font-size: 12.5px; color: var(--ink2); }
+  .nudgegroup .nudgelabel { margin-right: 2px; }
+  .nudgegroup button { padding: 3px 9px; min-width: 26px; font-size: 14px; line-height: 1; }
+  /* arrow-key CTA chips (replace the old sliders): show the keys and current value */
+  .cta { font-family: var(--mono); font-size: 12.5px; color: var(--ink2); display: inline-flex;
+    align-items: center; gap: 4px; }
+  .cta kbd { font-size: 11px; padding: 1px 6px; min-width: 16px; }
+  .cta b { color: var(--accent); font-weight: 600; margin-left: 2px; }
+  button {
+    background: var(--panel2); color: var(--ink); border: 1px solid var(--line2);
+    border-radius: 2px; padding: 7px 15px; font-size: 13.5px; cursor: pointer;
+    font-family: var(--mono); letter-spacing: .01em;
+    transition: background .12s, color .12s, border-color .12s, transform .06s;
+  }
+  button:hover { border-color: var(--ink); background: var(--bg2); }
+  button:active { transform: translateY(1px); }
+  button.primary { background: var(--accent); color: #fbf3ec; border-color: var(--accent); font-weight: 600; }
+  button.primary:hover { background: #841f12; border-color: #841f12; }
+  button:disabled { opacity: .42; cursor: not-allowed; }
+  label { color: var(--ink2); font-size: 13px; display: inline-flex; align-items: center; gap: 7px; font-family: var(--mono); }
+  input[type=range] { width: 132px; vertical-align: middle; accent-color: var(--accent); }
+  select {
+    background: var(--panel2); color: var(--ink); border: 1px solid var(--line2);
+    border-radius: 2px; padding: 6px 10px; font-size: 13px; font-family: var(--mono);
+  }
+
+  /* ---- printed keyboard legend (the Space/Return/R answer, made legible) ---- */
+  .keyhint {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px;
+    margin-top: 14px; padding-top: 12px; border-top: 1px dotted var(--line2);
+    font-family: var(--serif); font-size: 13.5px; color: var(--ink2);
+  }
+  .keyhint span { margin-right: 14px; }
+  /* small top strip: same shortcuts, compact, centered, at the very top */
+  .keyhint-top {
+    margin-top: 0; padding: 8px 14px; border-top: none;
+    justify-content: center; font-size: 12px; gap: 5px 7px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 2px;
+    color: var(--muted);
+  }
+  .keyhint-top span { margin-right: 10px; }
+  .keyhint-top kbd { font-size: 11px; padding: 1px 6px; min-width: 16px; }
+  kbd {
+    font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--ink);
+    background: linear-gradient(#fffdf7, #ece3d0);
+    border: 1px solid var(--line2); border-bottom-width: 2px; border-radius: 4px;
+    padding: 2px 7px; min-width: 20px; text-align: center; box-shadow: 0 1px 0 rgba(28,26,23,.08);
+  }
+  /* kbd inside a panel heading: small, inline, lowercase-friendly */
+  .panel h2 kbd {
+    font-size: 10px; padding: 1px 5px; min-width: 14px; border-bottom-width: 1px;
+    text-transform: none; letter-spacing: 0; vertical-align: middle;
+  }
+
+  /* ---- verifier ---- */
+  #verdict { font-weight: 600; padding: 9px 13px; border-radius: 2px; margin-bottom: 12px; font-family: var(--mono); font-size: 13.5px; }
+  #verdict.ok { background: rgba(47,107,58,.12); color: var(--good); border: 1px solid rgba(47,107,58,.4); }
+  #verdict.fail { background: rgba(154,47,31,.12); color: var(--bad); border: 1px solid rgba(154,47,31,.45); }
+  #verdict.stats { background: rgba(31,95,107,.1); color: var(--opt0); border: 1px solid rgba(31,95,107,.35); }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; font-family: var(--mono); }
+  th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; font-size: 11px; }
+  td.bad { color: var(--bad); font-weight: 600; }
+  td.warn { color: var(--warn); font-weight: 600; }
+  .hist { display: flex; gap: 12px; align-items: flex-end; height: 62px; margin: 10px 0 6px; }
+  .bar { width: 34px; background: var(--opt0); border-radius: 1px; position: relative; }
+  .bar span { position: absolute; bottom: -19px; left: 0; right: 0; text-align: center; color: var(--muted); font-size: 11px; font-family: var(--mono); }
+  .bar b { position: absolute; top: -16px; left: 0; right: 0; text-align: center; font-size: 11px; color: var(--ink); font-family: var(--mono); }
+
+  /* ---- graph plate ---- */
+  #graphwrap { overflow-x: auto; }
+  svg text { font-size: 11px; fill: var(--ink2); font-family: var(--mono); }
+  .gnode { fill: var(--panel2); stroke: var(--line2); stroke-width: 1.5; }
+  .gnode.active { fill: var(--accent); stroke: var(--accent); }
+  .gedge { stroke: var(--line2); stroke-width: 1.4; fill: none; marker-end: url(#arrow); opacity: .6; transition: opacity .12s, stroke-width .12s; }
+  .gedge.lit0 { stroke: var(--opt0) !important; stroke-width: 2.5; }
+  .gedge.lit1 { stroke: var(--opt1) !important; stroke-width: 2.5; }
+  .gedge.fired { stroke: var(--accent) !important; stroke-width: 3; opacity: 1; }
+  svg.dimmable .gedge { opacity: .12; }
+  svg.dimmable .gedge.hl { opacity: 1; stroke-width: 2.5; }
+  svg.dimmable .gnode.hl { stroke: var(--accent); stroke-width: 2; }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; color: var(--muted); font-size: 12px; margin-top: 6px; font-family: var(--mono); }
+  .legend i { display: inline-block; width: 12px; height: 12px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  .note { color: var(--muted); font-size: 13px; margin-top: 10px; font-style: italic; font-family: var(--serif); }
+  /* build-stamped "last updated" footer, repeated at the bottom of every tab */
+  .pagefooter { grid-column: 1 / -1; text-align: center; color: var(--muted);
+    font-family: var(--mono); font-size: 11.5px; letter-spacing: .02em;
+    margin: 28px 0 0; padding-top: 14px; border-top: 1px dotted var(--line2); }
+  /* the footer hugs the foot of the demo page: cancel the .wrap bottom padding
+     beneath it so it is the last visible thing, not floating above empty space. */
+  .wrap > .pagefooter { margin-bottom: -64px; padding-bottom: 8px; }
+  @media (max-width: 920px) { .wrap > .pagefooter { margin-bottom: -48px; } }
+
+  /* ---- N-way plotter-pen palette (kept on the same class names) ---- */
+  .pal0{--c:#1f5f6b;} .pal1{--c:#b8761b;} .pal2{--c:#7a3f7d;}
+  .pal3{--c:#3a6b2f;} .pal4{--c:#9a2f5c;} .pal5{--c:#5a6b14;}
+  #output .gen.b0{color:#1f5f6b;} #output .gen.b1{color:#b8761b;} #output .gen.b2{color:#7a3f7d;}
+  #output .gen.b3{color:#3a6b2f;} #output .gen.b4{color:#9a2f5c;} #output .gen.b5{color:#5a6b14;}
+  #output .gen.stopword{color:var(--stop); font-weight:600;}
+  .chip.o0{border-color:#1f5f6b;color:#1f5f6b;} .chip.o1{border-color:#b8761b;color:#b8761b;}
+  .chip.o2{border-color:#7a3f7d;color:#7a3f7d;} .chip.o3{border-color:#3a6b2f;color:#3a6b2f;}
+  .chip.o4{border-color:#9a2f5c;color:#9a2f5c;} .chip.o5{border-color:#5a6b14;color:#5a6b14;}
+  .chip small{opacity:.7; font-weight:400;}
+  .tok.cand0{box-shadow:inset 0 0 0 2px #1f5f6b;} .tok.cand1{box-shadow:inset 0 0 0 2px #b8761b;}
+  .tok.cand2{box-shadow:inset 0 0 0 2px #7a3f7d;} .tok.cand3{box-shadow:inset 0 0 0 2px #3a6b2f;}
+  .tok.cand4{box-shadow:inset 0 0 0 2px #9a2f5c;} .tok.cand5{box-shadow:inset 0 0 0 2px #5a6b14;}
+
+  /* ---- tabs: a journal contents bar ---- */
+  nav.tabs { display:flex; gap:2px; padding: 0 40px; border-bottom:2px solid var(--ink); flex-wrap:wrap; background: var(--bg2); }
+  nav.tabs button { background:transparent; border:none; border-bottom:3px solid transparent; border-radius:0; color:var(--muted); padding:11px 15px; font-size:13px; font-family:var(--mono); letter-spacing:.02em; transition: color .12s, border-color .12s; }
+  nav.tabs button.active { color:var(--accent); border-bottom-color:var(--accent); font-weight:600; }
+  nav.tabs button:hover { color:var(--ink); background: var(--panel); }
+  @media (max-width: 920px) { nav.tabs { padding: 0 12px; } }
+
+  .source-panel { padding: 16px 40px; border-bottom:1px solid var(--line); background:var(--panel); display:none; }
+  .source-panel.active { display:block; }
+  /* roomy bottom space on the prose tabs so the last content (e.g. the Methods
+     Pareto graph) clears the viewport and is easy to scroll to fully. */
+  body.about-mode .source-panel.active { padding-bottom: 30vh; border-bottom: none; }
+  .source-panel textarea { width:100%; min-height:90px; background:var(--panel2); color:var(--ink2); border:1px solid var(--line2); border-radius:2px; padding:11px; font:13px/1.55 var(--mono); resize:vertical; }
+  .source-panel input[type=text] { width:100%; background:var(--panel2); color:var(--ink2); border:1px solid var(--line2); border-radius:2px; padding:8px 10px; font-size:13px; font-family:var(--mono); }
+  .source-panel .row { display:flex; gap:10px; align-items:center; margin-top:8px; flex-wrap:wrap; }
+  .source-panel p.hint { color:var(--ink2); font-size:13.5px; margin:0 auto 9px; max-width: 78ch; line-height: 1.55; text-align: center; }
+  .source-panel p.hint code { background: var(--panel2); border: 1px solid var(--line); border-radius: 2px; padding: 0 4px; font-family: var(--mono); font-size: 12px; }
+  @media (max-width: 920px) { .source-panel { padding: 14px 22px; } }
+  #urlStatus, #stdStatus { color:var(--muted); font-size:12.5px; font-family:var(--mono); }
+
+  /* ---- long-form prose tabs (Method / About / Words / References) ---- */
+  .about-prose { max-width: 74ch; margin-inline: auto; } /* centered column, text stays left-aligned for readability */
+  .about-prose h3 { font-family: var(--display); font-weight: 600; font-size: 19px; margin: 22px 0 6px; color: var(--ink); }
+  .about-prose p { margin: 0 0 12px; color: var(--ink2); font-size: 15.5px; line-height: 1.68; }
+  .about-prose a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; text-decoration-thickness: 1px; }
+  .about-prose a:hover { background: rgba(154,47,31,.1); }
+  .about-prose ul.sources { margin: 4px 0 12px; padding-left: 20px; max-width: 76ch; }
+  .about-prose ul.sources li { margin: 0 0 7px; color: var(--ink2); font-size: 14.5px; line-height: 1.55; }
+  .about-prose .lede { font-family: var(--display); font-weight: 400; font-size: 18px; line-height: 1.5; color: var(--ink); margin: 4px 0 18px; }
+  .about-prose .appendix { font-size: 13.5px; line-height: 1.55; color: var(--ink2); margin: 0 0 12px; padding-left: 16px; border-left: 2px solid var(--line); max-width: 76ch; }
+  .about-prose .appendix b { font-family: var(--mono); font-size: 12px; letter-spacing: .02em; color: var(--ink); }
+  .about-prose code { background: var(--panel2); border: 1px solid var(--line); border-radius: 2px; padding: 0 4px; font-size: 13px; font-family: var(--mono); }
+  .about-prose blockquote { margin: 14px 0; padding: 4px 0 4px 18px; border-left: 3px solid var(--accent);
+    font-family: var(--display); font-weight: 400; font-style: italic; font-size: 16px; line-height: 1.6; color: var(--ink); }
+  .about-prose blockquote cite { display: block; margin-top: 8px; font-family: var(--mono); font-style: normal;
+    font-size: 12px; color: var(--muted); letter-spacing: .02em; }
+  .about-prose blockquote cite a { color: var(--muted); }
+  .about-prose.method ol { max-width: 76ch; padding-left: 24px; }
+  .about-prose.method ol li { margin: 0 0 9px; color: var(--ink2); font-size: 15.5px; line-height: 1.68; }
+  body.about-mode .wrap { display: none; }
+
+  /* ---- the gate: a sealed title page ---- */
+  #gate { position: fixed; inset: 0; background: var(--bg); z-index: 1000;
+          display: flex; align-items: center; justify-content: center;
+          background-image:
+            radial-gradient(ellipse 100% 70% at 50% 0%, rgba(255,255,255,.5), transparent 65%),
+            url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='.035'/%3E%3C/svg%3E"); }
+  #gate.hidden { display: none; }
+  #gateForm { background: var(--panel); border: 1px solid var(--ink); border-top: 4px solid var(--accent);
+              border-radius: 2px; padding: 38px 40px 32px; width: min(380px, 90vw); text-align: center;
+              box-shadow: 2px 6px 0 rgba(28,26,23,.1); position: relative; }
+  #gateForm::before { content: "PRIVATE \2014 BY KEY"; position: absolute; top: 13px; left: 0; right: 0;
+              font: 600 10px/1 var(--mono); letter-spacing: .26em; color: var(--muted); }
+  #gateForm h2 { margin: 14px 0 6px; font-family: var(--display); font-weight: 600; font-size: 22px; color: var(--ink); line-height: 1.12; }
+  #gateForm p { margin: 0 0 18px; color: var(--ink2); font-size: 14px; }
+  #gateForm input { width: 100%; padding: 11px 13px; margin-bottom: 13px; border-radius: 2px;
+                    border: 1px solid var(--line2); background: var(--panel2); color: var(--ink);
+                    font-size: 15px; font-family: var(--mono); text-align: center; letter-spacing: .12em; }
+  #gateForm input:focus { outline: none; border-color: var(--accent); }
+  #gateForm input::placeholder { color: var(--muted); opacity: 1; letter-spacing: .04em; }
+  #gateForm button { width: 100%; }
+  #gateErr { color: var(--bad); font-size: 13px; margin-top: 11px; min-height: 16px; font-family: var(--mono); }
+  body.locked { overflow: hidden; }
+
+  /* =================================================================
+     Mobile (phones). The monograph keeps its character; it just folds
+     to a single readable column with finger-sized controls, a tab
+     strip that scrolls instead of stacking three rows, and a graph
+     figure scaled to fit the screen instead of forcing a pan.
+     ================================================================= */
+  @media (max-width: 640px) {
+    html, body { font-size: 16px; }
+    header { padding: 20px 18px 16px; }
+    h1 { font-size: clamp(23px, 7vw, 30px); }
+    header p { font-size: 14px; }
+
+    /* one figure-plate per row, edge-to-edge breathing room */
+    .wrap { padding: 18px 14px 56px; gap: 16px; }
+    .panel { padding: 15px 15px 17px; }
+
+    /* the graph: scale the whole SVG to the column width (the SVG carries
+       its intrinsic max-width via svgWrap, so this never upscales on desktop).
+       The wrapper still allows a pan as a fallback for very wide lattices. */
+    #graphwrap svg { width: 100%; height: auto; }
+
+    /* tab bar: a single horizontally-scrollable strip, not a 3-row block.
+       Momentum scroll on iOS; snap each tab; hide the scrollbar. */
+    nav.tabs {
+      flex-wrap: nowrap; overflow-x: auto; padding: 0 14px;
+      -webkit-overflow-scrolling: touch; scroll-snap-type: x proximity;
+      scrollbar-width: none;
+    }
+    nav.tabs::-webkit-scrollbar { display: none; }
+    nav.tabs button { flex: 0 0 auto; white-space: nowrap; padding: 12px 13px; scroll-snap-align: start; }
+
+    /* finger-sized targets (>= 44px) for every control */
+    #controls button, .source-panel button { padding: 11px 16px; min-height: 44px; }
+    #controls select, .source-panel select, .source-panel input[type=text] { min-height: 44px; padding: 9px 12px; }
+    #controls label { font-size: 13.5px; }
+    input[type=range] { width: 100%; min-width: 140px; height: 28px; }
+    /* sliders get their own full-width rows so the thumb is easy to grab */
+    #controls label:has(input[type=range]) { flex: 1 1 100%; }
+    #controls select { flex: 1 1 100%; }
+    .source-panel { padding: 14px; }
+
+    /* keyboard legend is desktop-only guidance; on a touch device there is no
+       keyboard, so reclaim the space. (The on-screen buttons do the same jobs.) */
+    .keyhint { display: none; }
+
+    /* generated output / training text sized for a small screen */
+    #training { font-size: 16px; line-height: 2.15; }
+    #output { font-size: 15px; }
+    .chip { font-size: 13px; padding: 7px 12px; }
+
+    /* prose tabs: comfortable reading measure on a phone */
+    .about-prose p, .about-prose.method ol li { font-size: 15px; line-height: 1.62; }
+    .about-prose .lede { font-size: 16.5px; }
+    .about-prose h3 { font-size: 17px; }
+
+    /* gate fills the small screen pleasantly */
+    #gateForm { padding: 34px 26px 28px; width: min(92vw, 360px); }
+  }
+
+  /* very small phones: let long mono words break rather than push width */
+  @media (max-width: 380px) {
+    #training, #output { word-break: break-word; overflow-wrap: anywhere; }
+    nav.tabs button { font-size: 12.5px; padding: 12px 11px; }
+  }
+
+  /* respect reduced-motion preferences */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
+  }
+</style>
+</head>
+<body>
+<!-- Password gate. NOTE: this is client-side obfuscation, NOT real security.
+     The password ships to the browser; anyone can read it in the page source.
+     It keeps casual visitors out, nothing more. For real protection use
+     server-side auth (e.g. Cloudflare Access or HTTP Basic Auth). -->
+<div id="gate">
+  <form id="gateForm">
+    <h2>How a Language Model Walks</h2>
+    <p>Enter the password to continue.</p>
+    <input type="password" id="gatePw" autocomplete="off" autofocus placeholder="password">
+    <button type="submit" class="primary">Enter</button>
+    <div id="gateErr"></div>
+  </form>
+</div>
+
+<header>
+  <h1>How a (small) language model walks through its training text</h1>
+  <p>A bigram model is just a map: a word usually appears many times in the text, so what follows it is a <i>distribution</i> over next words. Generating text is a random walk over that map; the reading head moves through the training text as each word is sampled and, having writ, moves on. The <b>Designed</b> tab uses text engineered (e.g., so every word has exactly <b>2</b> next-word choices, 3 for sentence-enders) to make the branching visible; a Strategy pulldown offers several such designs. The other tabs analyze <b>real</b> text &mdash; pasted or a public-domain classic &mdash; where out-degrees vary wildly and frequent continuations are likelier.</p>
+</header>
+
+<nav class="tabs" id="tabs">
+  <button data-tab="designed" class="active">Designed text</button>
+  <button data-tab="paste">Write (or paste) your own text</button>
+  <button data-tab="url">From URL(s)</button>
+  <button data-tab="standard">Standard texts</button>
+  <button data-tab="method">Method</button>
+  <button data-tab="about">About / History</button>
+  <button data-tab="words">Word sources</button>
+  <button data-tab="sources">References</button>
+</nav>
+
+<div class="source-panel active" id="sp-designed">
+  <p class="hint">A built-in demo: training text engineered so every word has exactly 2 next-word choices (3 for sentence-enders). Use the Strategy dropdown and "New training text" below.</p>
+</div>
+
+<div class="source-panel" id="sp-paste">
+  <p class="hint">Paste/write any text. It is analyzed as-is: the real bigram graph is built with frequencies, and the walk samples likelier continuations more often. Out-degrees vary wildly, the opposite of the designed demo's uniform branching.</p>
+  <textarea id="pasteText" placeholder="Paste training text here..."></textarea>
+  <div class="row"><button id="pasteGo" class="primary">Analyze this text</button></div>
+</div>
+
+<div class="source-panel" id="sp-url">
+  <p class="hint">Enter one or more URLs (comma- or newline-separated). The local backend fetches each page and uses BeautifulSoup to strip it to plain text, then analyzes the combined result. Requires running <code>python3 src/server.py</code>.</p>
+  <textarea id="urlList" placeholder="https://www.gutenberg.org/files/1342/1342-0.txt&#10;https://example.com/article"></textarea>
+  <div class="row"><button id="urlGo" class="primary">Fetch &amp; analyze</button><span id="urlStatus"></span></div>
+</div>
+
+<div class="source-panel" id="sp-standard">
+  <p class="hint">Text excerpts bundled with the app. Pick one to build its real bigram graph and walk it. <i>Eugene Onegin</i> is the text Andrey Markov used in 1913 for the first Markov chain &mdash; see the About / History tab.</p>
+  <div class="row">
+    <label>Text <select id="stdSelect"></select></label>
+    <button id="stdGo" class="primary">Load &amp; analyze</button>
+    <span id="stdStatus"></span>
+  </div>
+</div>
+
+
+<div class="source-panel" id="sp-method">
+  <div class="about-prose method">
+    <p class="lede">The "Designed" tab builds a training text by construction, so the bigram
+       model's branching is small and controlled instead of whatever a real corpus happens to
+       give. Here is the shared machinery, the four ways the dropdown authors the text, and the
+       two checks that keep it honest.</p>
+
+    <h3>A bigram graph</h3>
+    <p>A bigram model reads a token sequence and records, for each word, the set of words seen
+       immediately after it. Write that as a directed graph: vertices are the distinct words, and
+       there is an edge <code>u &rarr; v</code> whenever <code>v</code> follows <code>u</code>
+       somewhere in the text. A word's <b>out-degree</b> is the number of <em>distinct</em> words
+       that follow it. The generative step is a random walk on this graph, sampling each next word
+       in proportion to how often it followed the current one; the out-degree is the branching factor
+       of that choice. The point of the Designed tab is to make that branching uniform and low
+       (mostly 2) so the generative process is legible.</p>
+
+    <h3>Constructing the lattice</h3>
+    <p>Lay out a cyclic part-of-speech template (DET &rarr; ADJ &rarr; NOUN &rarr; VERB &rarr; DET
+       &rarr; &hellip;) and fill each slot with a column of <code>m</code> distinct words. Number
+       each column's words <code>0&hellip;m-1</code>. Word <code>i</code> points to words in the
+       next column at indices <code>2i mod m</code> and <code>2i+1 mod m</code>; for
+       <code>m &ge; 2</code> those are distinct, so each word gets out-degree 2. There is no
+       displayed "END" token: the period "." is a real token that plays the role of end-of-
+       sequence. The <code>m</code> (words per slot) is what the <b>Length</b> slider sets, so the
+       slider is really a vocabulary control.</p>
+
+    <h3>Out-degree counts strings, not slots</h3>
+    <p>The subtle hazard is that out-degree aggregates over <em>every occurrence of a surface
+       string</em>, not over a grammatical slot. Put "the" in two columns and the graph unions its
+       successors, silently landing it at out-degree 4. The per-slot regularity is invisible; only
+       string identity counts. The fix is a discipline: give every column a <b>disjoint word
+       pool</b>, so each surface string lives in exactly one slot. Then the empirical out-degree
+       equals the assigned one &mdash; provided every assigned edge actually appears in the
+       displayed text. That proviso drives the covering walk below.</p>
+
+    <h3>Five strategies (the Strategy dropdown)</h3>
+    <p>All five keep a word-level bigram model and a one-word reading head; they differ only in how
+       the training text is authored, which changes the out-degree profile:</p>
+    <ul>
+      <li><b>lattice (strict k=2)</b> &mdash; every word has exactly 2 successors; a verb can also
+        take the period (out-degree 3) to end a sentence. The cleanest case, and the one the math
+        above describes exactly. The self-check asserts a hard pass/fail here.</li>
+      <li><b>mixed (k = 2 or 3)</b> &mdash; each word gets 2 <em>or</em> 3 successors at random, so
+        the branching reads less mechanically while staying tightly bounded.</li>
+      <li><b>prose (objects + conjunctions)</b> &mdash; clauses take objects
+        (DET ADJ NOUN VERB NOUN) and join mid-sentence with "and"/"yet". Verbs reach out-degree 3-4
+        (a real word, an object, the period, a conjunction); the model still just learns the
+        adjacencies.</li>
+      <li><b>natural (optional adjectives + prepositions)</b> &mdash; the <b>default</b>. Two edges
+        relax the rigid slot order toward real English: a determiner can go straight to a noun
+        (so "the machine" appears alongside "the tender machine"), and a noun can open a
+        <em>prepositional phrase</em> instead of taking its verb ("the idea in the meadow sleeps").
+        Most words still have out-degree 2; the graph stays one strongly-connected piece so the
+        covering walk and guard still hold.</li>
+      <li><b>free function words</b> &mdash; content words stay at 2, but determiners and the period
+        branch widely, the way real function words do, giving natural connective tissue.</li>
+    </ul>
+    <p>The strict lattice asserts a flat 2/3/2 pass/fail; the other four run in <b>report mode</b>,
+       showing the real out-degree histogram instead, because their whole point is to relax the
+       flat-k=2 claim for readability. (Agreement and tense are not varied, and there are no relative
+       clauses &mdash; those would either need more word forms or balloon the branching past what you
+       can follow by eye.)</p>
+
+    <h3>Covering every edge in the walk</h3>
+    <p>The displayed text is a walk, so it shows at most (tokens &minus; 1) edges; to exhibit all
+       the graph's edges it needs at least (edges + 1) tokens, achieved only by an Eulerian path.
+       But the lattice is not <b>balanced</b> (the first determiners are pointed at more often than
+       they point out), so no single Eulerian pass covers every edge once, and a naive routine
+       would "jump" at the seams and emit pairs that are not real edges. So we solve the directed
+       <a href="https://en.wikipedia.org/wiki/Chinese_postman_problem" target="_blank">route-
+       inspection (Guan's route) problem</a>: measure each vertex's imbalance, add the fewest
+       duplicate edges (along shortest paths) to balance it, then take an Eulerian circuit with
+       <a href="https://en.wikipedia.org/wiki/Eulerian_path#Hierholzer's_algorithm" target="_blank">Hierholzer's
+       algorithm</a> and rotate it to end on a period. The leftover phrase repetition is structural:
+       the imbalanced nodes sit on opposite sides of the cycle, so the duplicate paths are long.</p>
+
+    <h3>Two checks that keep it honest</h3>
+    <p>None of this is taken on faith. First, a <b>build-time coverage guard</b> runs for every
+       strategy: it recomputes the bigram graph from the emitted tokens and requires it to equal
+       the designed graph &mdash; no spurious adjacency, no uncovered edge. If they differ it shows
+       a "GRAPH/TEXT MISMATCH" banner and disables generation, so the text you read can never
+       silently diverge from the graph the panel draws. Second, the <b>self-check</b> panel reports
+       the out-degrees: a hard PASS/FAIL for the strict lattice (2 for ordinary words, 3 for
+       sentence-enders, 2 for the period), or the real histogram for the report-mode strategies.
+       The model is Shannon's 1948 first-order word model throughout; the construction only rigs
+       the training text so its branching is something you can follow by eye.</p>
+
+    <h3>How lively is the generated text? Scale is not the whole story</h3>
+    <p>The <em>generative</em> liveliness of a bigram model is how much its next word is in doubt:
+       the per-step conditional entropy of the source, weighted by how often each word actually occurs,
+       <code>H&#772; = &sum;<sub>w&#8321;</sub> (n(w&#8321;)/N) H[p(w&#8322;|w&#8321;)]</code> in bits,
+       from the text's bigram counts. A word with one successor (out-degree k=1) contributes 0 bits;
+       a word that never recurs (k=0, a dead end) also contributes 0 and drags the average down. This
+       is the conditional entropy of <a href="https://people.math.harvard.edu/~ctm/home/text/others/shannon/entropy/entropy.pdf" target="_blank">Shannon's
+       n-gram model</a> (1948; and <i>Prediction and Entropy of Printed English</i>, 1951). You might
+       expect a bigger vocabulary to mean a livelier model, but the curves below show that liveliness
+       depends as much on the <em>structure</em> of the training text as on its size: each curve is the
+       most entropy reachable at each vocabulary size, over every contiguous whole-sentence excerpt of
+       one short text.</p>
+    <div id="paretowrap"></div>
+    <p class="note">Three repetitive texts, same axes. Aristophanes' frog chorus (<i>The Frogs</i>,
+       405 BC) wrings real entropy out of a 3-word vocabulary (0.67 bits/step): tiny but structured.
+       The cumulative rhyme <i>The House That Jack Built</i> (1755) climbs highest because its
+       high-traffic words ("that", "the") branch heavily as the verse accumulates. Same scale, very
+       different liveliness, depending on how the words connect.</p>
+
+    <h3>Appendix: the texts</h3>
+    <p>The three public-domain texts behind the curves above. (The House That Jack Built and Ring a
+       Ring o' Roses are also in the Standard-texts tab, to walk directly.)</p>
+    <p class="appendix"><b>The Frogs</b> (Aristophanes, 405 BC):<br>
+       Brekekekex koax koax. Brekekekex koax koax. We children of the fountain and the lake. Let us
+       raise our harmonious song, koax koax. The fair notes of our music, brekekekex koax koax.</p>
+    <p class="appendix"><b>Ring a Ring o' Roses</b> (traditional):<br>
+       Ring a ring o' roses. A pocket full of posies. A-tishoo. A-tishoo. We all fall down.</p>
+    <p class="appendix"><b>The House That Jack Built</b> (1755):<br>
+       This is the house that Jack built. This is the malt that lay in the house that Jack built. This
+       is the rat that ate the malt that lay in the house that Jack built. This is the cat that killed
+       the rat that ate the malt that lay in the house that Jack built. This is the dog that worried
+       the cat that killed the rat that ate the malt that lay in the house that Jack built. This is the
+       cow with the crumpled horn that tossed the dog that worried the cat that killed the rat that ate
+       the malt that lay in the house that Jack built.</p>
+  </div>
+</div>
+
+<div class="source-panel" id="sp-about">
+  <div class="about-prose">
+    <h3>Shannon, 1945</h3>
+    <p>The bigram model you are watching first appears, fully formed, in a classified
+       <a href="https://en.wikipedia.org/wiki/Bell_Labs" target="_blank">Bell Labs</a> war memorandum by
+       <a href="https://en.wikipedia.org/wiki/Claude_Shannon" target="_blank">Claude Shannon</a>,
+       <a href="https://www.iacr.org/museum/shannon45.html" target="_blank"><i>A Mathematical
+       Theory of Cryptography</i></a> (1 September 1945). It is all there: transition
+       probabilities p<sub>i</sub>(j), the probability that letter i is followed by letter j;
+       digram and trigram tables; and the famous "series of approximations to English," where
+       you generate text by sampling each letter (then each word) from the frequencies with
+       which it followed what came before. The bigram walk in this demo is exactly Shannon's
+       first-order word approximation. The version most people cite, <i>A Mathematical Theory of
+       Communication</i> (1948), reused these passages three years later; the language model
+       itself is wartime work. (Earlier still, <a href="https://en.wikipedia.org/wiki/Andrey_Markov" target="_blank">Andrey
+       Markov</a> had in 1913 counted vowel/consonant transitions across 20,000 letters of
+       Pushkin's <i>Eugene Onegin</i> &mdash; the
+       <a href="https://spectrum.ieee.org/andrey-markov-and-claude-shannon-built-the-first-language-generation-models" target="_blank">first
+       chain of its kind</a>. Markov counted letters; Shannon's step was to make those counts
+       <em>generative</em> &mdash; a model that does not just measure language but produces it. You can run the bigram walk on Markov's own text in the
+       Standard texts tab.)</p>
+
+    <h3>Turing and Shannon, over tea at Bell Labs</h3>
+    <p>Shannon wrote it as a codebreaker. A cipher is attacked through the statistical
+       structure of the underlying language &mdash; its redundancy, the predictability that a
+       letter constrains the next. The same n-gram statistics that let Shannon's model
+       <em>generate</em> English-like text let a cryptanalyst <em>recognize</em> it emerging
+       from a partly-broken cipher. The 1945 memo treats the language model and the attack as
+       two sides of one mathematics. It was written after the Allied codebreaking effort had
+       industrialized: <a href="https://en.wikipedia.org/wiki/Colossus_computer" target="_blank">Colossus</a>, the
+       electronic machine built to break the German Lorenz cipher at
+       <a href="https://en.wikipedia.org/wiki/Bletchley_Park" target="_blank">Bletchley Park</a>, was running by the end of
+       1943.</p>
+    <p>The Allied lead in this mathematics had itself come from Poland. Three mathematicians of
+       the Polish Cipher Bureau &mdash; <a href="https://en.wikipedia.org/wiki/Marian_Rejewski" target="_blank">Marian
+       Rejewski</a>, <a href="https://en.wikipedia.org/wiki/Henryk_Zygalski" target="_blank">Henryk Zygalski</a>, and
+       <a href="https://en.wikipedia.org/wiki/Jerzy_R%C3%B3%C5%BCycki" target="_blank">Jerzy Różycki</a> &mdash; had broken
+       Enigma years before the British, treating the cipher as a problem in the statistics and
+       structure of its messages. With engineers from the
+       <a href="https://en.wikipedia.org/wiki/AVA_Radio_Company" target="_blank">AVA Radio Company</a> they built the
+       <i>bomba</i> to search Enigma settings, and at a secret meeting in the
+       <a href="https://www.gchq.gov.uk/information/the-pyry-forest-meeting" target="_blank">Pyry
+       forest</a> south of Warsaw, on 25 July 1939, handed reconstructed machines and their
+       methods to French and British intelligence &mdash; weeks before the war began.</p>
+    <p>For about two months from January 1943, <a href="https://en.wikipedia.org/wiki/Alan_Turing" target="_blank">Alan
+       Turing</a> &mdash; who had reported to Bletchley on 4 September 1939, the day after
+       Britain declared war, and who led the attack on the naval
+       <a href="https://en.wikipedia.org/wiki/Enigma_machine" target="_blank">Enigma</a> &mdash; was at Bell Labs on
+       <a href="https://en.wikipedia.org/wiki/SIGSALY" target="_blank">SIGSALY</a> secure-speech work. He and Shannon took
+       tea together, by Shannon's account daily.</p>
+
+    <h3>Language, communication, and stochastic walks</h3>
+    <p>The walk samples each next word in proportion to how often it followed the current word
+       in the training text. That is all Shannon's model does; there is no temperature or other
+       sampling knob (those came later, with neural language models). The "Designed" tab rigs
+       the training text so every word has exactly two choices, to make the branching visible;
+       the other tabs show what real text looks like, where a word like "the" may have dozens of
+       continuations.</p>
+    <p>Shannon's bigram model already made a machine "use language," after a fashion &mdash; a small
+       generative engine &mdash; even before the term <i>artificial intelligence</i> was coined, in a
+       1955 proposal for the 1956 <a href="https://en.wikipedia.org/wiki/Dartmouth_workshop" target="_blank">Dartmouth
+       summer workshop on artificial intelligence</a> (which Shannon co-authored).</p>
+
+    <h3>McCarthy, Shannon, and the name</h3>
+    <p>The man who coined <i>artificial intelligence</i>, <a href="https://en.wikipedia.org/wiki/John_McCarthy_(computer_scientist)" target="_blank">John
+       McCarthy</a> &mdash; a Princeton mathematics instructor, having taken his PhD there in 1951 &mdash;
+       spent the summer of 1952 working with Shannon at Bell Labs, where the two went on to co-edit
+       <i>Automata Studies</i> (Princeton University Press, 1956). In his own account:</p>
+    <blockquote>
+       I invented the term artificial intelligence. I invented it because when we were trying to get
+       money for a summer study, I had a previous bad experience. In 1952 Claude Shannon and I decided
+       to collect a batch of studies which we hoped would contribute to launching this field, and
+       Shannon thought that artificial intelligence was too flashy a term and might attract unfavorable
+       notice. So we agreed to call it <i>Automata studies</i>, and I was terribly disappointed when the
+       papers we received were about automata, and very few of them had anything to do with the goal
+       that at least I was interested in. So I decided not to fly any false flags anymore, but to say
+       that this is study aimed at the long-term goal of achieving human-level intelligence.
+       <cite>John McCarthy, <a href="https://en.wikipedia.org/wiki/Lighthill_report" target="_blank">Lighthill debate</a>, 1973 (<a href="https://www.youtube.com/watch?v=pyU9pm1hmYs&t=153s" target="_blank">video, from 2:33</a>)</cite>
+    </blockquote>
+
+
+    <h3>Credits</h3>
+    <p>Vibecoded/spellcast by Chris Wiggins (<a href="mailto:chris.wiggins@gmail.com">chris.wiggins@gmail.com</a>),
+       inspired by the work in <a href="https://wwnorton.com/books/how-data-happened" target="_blank"><i>How
+       Data Happened: A History from the Age of Reason to the Age of Algorithms</i></a> and the course
+       <a href="https://data-ppf.github.io/" target="_blank"><i>Data: Past, Present, and Future</i></a>,
+       authored and designed, respectively, with <a href="https://en.wikipedia.org/wiki/Matthew_L._Jones" target="_blank">Matthew L. Jones</a>.</p>
+    <p class="hint" id="lastUpdated">last updated: run the build to stamp the time</p>
+  </div>
+</div>
+
+<div class="source-panel" id="sp-words">
+  <div class="about-prose">
+    <h3>Where the words come from</h3>
+    <p>The "Designed" tab's vocabulary is not random. Its words are drawn from a small canon of
+       texts about language, machines, and whether fluent output amounts to understanding &mdash;
+       so even the nonsense the model emits carries an echo of that argument.</p>
+    <ul class="sources">
+      <li><b>Christopher Strachey's love letters (1952).</b> On the
+        <a href="https://en.wikipedia.org/wiki/Strachey_love_letter_algorithm" target="_blank">Ferranti
+        Mark 1 at Manchester</a>, Strachey filled a fixed template &mdash; "YOU ARE MY [adjective]
+        [noun]..." &mdash; from word lists drawn from Roget's Thesaurus, signed "M.U.C." It is the
+        direct ancestor of this demo: a grammatical template filled from pools, twelve years before
+        ELIZA. The romantic words here (darling, adoring, tender, heart, yearns, adores) are its register.</li>
+      <li><b>Chomsky, <i>Syntactic Structures</i> (1957).</b> The specimen sentence
+        <a href="https://en.wikipedia.org/wiki/Colorless_green_ideas_sleep_furiously" target="_blank"><i>colorless
+        green ideas sleep furiously</i></a> &mdash; perfectly grammatical, perfectly meaningless.
+        Exactly what a bigram chain produces; "colorless," "green," "idea," "sleeps" come from it.</li>
+      <li><b>Brautigan, <i>All Watched Over by Machines of Loving Grace</i> (1967).</b> The
+        <a href="https://en.wikipedia.org/wiki/Richard_Brautigan" target="_blank">poem</a>'s vision of
+        machines and nature in harmony gives "meadow" and "machine."</li>
+      <li><b>"Daisy Bell" (Harry Dacre, 1892).</b> Sung by an IBM mainframe at Bell Labs in 1961,
+        the <a href="https://en.wikipedia.org/wiki/Daisy_Bell" target="_blank">first recording of a
+        computer singing</a> &mdash; a touchstone for the whole lineage (the demo cites it by title;
+        its full public-domain lyric is not used).</li>
+      <li><b>Weizenbaum, on <a href="https://en.wikipedia.org/wiki/ELIZA" target="_blank">ELIZA</a>
+        (1976).</b> "What I had not realized is that extremely short exposures to a relatively simple
+        computer program could induce powerful delusional thinking in quite normal people." A bigram
+        walk is such a program.</li>
+      <li><b>Searle, the <a href="https://en.wikipedia.org/wiki/Chinese_room" target="_blank">Chinese
+        Room</a> (1980).</b> "Syntax is not sufficient for semantics." The model has the syntax (which
+        word follows which) and none of the semantics (no idea what any of it means).</li>
+      <li><b>Orwell, <a href="https://en.wikipedia.org/wiki/Politics_and_the_English_Language" target="_blank">"Politics
+        and the English Language"</a> (1946).</b> As Strunk and White put it in
+        <a href="https://en.wikipedia.org/wiki/The_Elements_of_Style" target="_blank">The Elements of
+        Style</a>: to show what happens when strong writing is deprived of its vigor, Orwell took a
+        passage from Ecclesiastes and drained it of its blood. The result begins "Objective
+        considerations of contemporary phenomena compel the conclusion that success or failure in
+        competitive activities exhibits no tendency to be commensurate with innate capacity..." That
+        is grammar smothering sense, the failure mode this demo makes visible.</li>
+    </ul>
+
+    <h3>Appendix: the words, by source</h3>
+    <p>The designed tab draws from a fixed pool of words, each evoking one of the sources above. Any
+       single training text uses only a shuffled slice (its size set by the <kbd>&uarr;</kbd><kbd>&darr;</kbd>
+       tokens control), so a given walk shows a subset; raise the token count to see more. That is why a
+       word like "delusional" or "semantics" appears only sometimes.</p>
+    <ul class="sources">
+      <li><b>Chomsky</b> (<i>colorless green ideas sleep furiously</i>): colorless, green, idea, sleeps</li>
+      <li><b>Brautigan</b> (<i>All Watched Over...</i>): cybernetic, meadow, loving; and the words "machine," "the," "and"</li>
+      <li><b>White / Orwell</b> (the Ecclesiastes parody, quoted in <i>The Elements of Style</i>): objective, machine; and the function words this, every, that, and, yet</li>
+      <li><b>McCarthy / Dartmouth</b> (the 1955 proposal): intelligent, abstract, intelligence, conjecture, concept, language, simulates, reasons; and some, each, then</li>
+      <li><b>Weizenbaum</b> (the ELIZA "delusional thinking" line): delusional, program</li>
+      <li><b>Searle</b> (the Chinese Room): formal, syntax, semantics</li>
+      <li><b>Strachey</b> (his love-letter word lists): tender, wistful, passionate, darling, heart, yearns, adores, loves, treasures, woos</li>
+      <li><b>prepositions</b> (for the "natural" strategy's prepositional phrases, each verbatim in the sources above): in, of, with</li>
+    </ul>
+    <p class="note">Every word the demo can emit is verbatim from one of these sources; there are no
+       invented filler words. (Some words appear in more than one source, e.g. "machine.")</p>
+    <p class="note">The words are slotted by true part of speech so the lattice still composes into
+       grammatical clauses; the verbs are third person singular.</p>
+  </div>
+</div>
+
+<div class="source-panel" id="sp-sources">
+  <div class="about-prose">
+    <h3>References</h3>
+    <ul class="sources">
+      <li>A. A. Markov, "An Example of Statistical Investigation of the Text <i>Eugene Onegin</i> Concerning the Connection of Samples in Chains," lecture 23 Jan 1913 (Eng. trans. <i>Science in Context</i> 19(4), 2006). <a href="https://www.americanscientist.org/article/first-links-in-the-markov-chain" target="_blank">overview</a></li>
+      <li>C. E. Shannon, <i>A Mathematical Theory of Cryptography</i> (classified Bell Labs memo, 1 Sep 1945). <a href="https://www.iacr.org/museum/shannon45.html" target="_blank">IACR scan</a></li>
+      <li>C. E. Shannon, <a href="https://en.wikipedia.org/wiki/A_Mathematical_Theory_of_Communication" target="_blank"><i>A Mathematical Theory of Communication</i></a> (Bell System Technical Journal, 1948).</li>
+      <li>A. Hodges, <i>Alan Turing: The Enigma</i> (1983) &mdash; the source for <a href="https://en.wikipedia.org/wiki/Alan_Turing" target="_blank">Turing</a>'s stay at Bell Labs from January 1943, consulting on the <a href="https://en.wikipedia.org/wiki/SIGSALY" target="_blank">SIGSALY</a> speech-encryption system and taking tea with Shannon: the wartime link between the <a href="https://en.wikipedia.org/wiki/Bletchley_Park" target="_blank">Bletchley Park</a> codebreaking effort and Bell Labs.</li>
+      <li>Polish Cipher Bureau &mdash; <a href="https://en.wikipedia.org/wiki/Marian_Rejewski" target="_blank">Rejewski</a>, <a href="https://en.wikipedia.org/wiki/Henryk_Zygalski" target="_blank">Zygalski</a>, <a href="https://en.wikipedia.org/wiki/Jerzy_R%C3%B3%C5%BCycki" target="_blank">Różycki</a>; <a href="https://en.wikipedia.org/wiki/AVA_Radio_Company" target="_blank">AVA Radio Company</a>; the <a href="https://www.gchq.gov.uk/information/the-pyry-forest-meeting" target="_blank">Pyry forest meeting</a>, 25 Jul 1939.</li>
+      <li>N. Chomsky, <i>Syntactic Structures</i> (1957) &mdash; the example sentence <a href="https://en.wikipedia.org/wiki/Colorless_green_ideas_sleep_furiously" target="_blank">"colorless green ideas sleep furiously"</a>.</li>
+      <li>R. Brautigan, <i>All Watched Over by Machines of Loving Grace</i> (1967). <a href="https://en.wikipedia.org/wiki/Richard_Brautigan" target="_blank">author</a></li>
+      <li>The 1955 proposal for the <a href="https://en.wikipedia.org/wiki/Dartmouth_workshop" target="_blank">Dartmouth Summer Research Project on Artificial Intelligence</a> (McCarthy, Minsky, Rochester, Shannon).</li>
+      <li>J. McCarthy, <i>Automata Studies</i> (co-edited with C. E. Shannon; Princeton University Press, 1956), and McCarthy's account of coining "artificial intelligence" after their 1952 Bell Labs collaboration, from the <a href="https://en.wikipedia.org/wiki/Lighthill_report" target="_blank">Lighthill debate</a>, 1973 (<a href="https://www.youtube.com/watch?v=pyU9pm1hmYs&t=153s" target="_blank">video, from 2:33</a>).</li>
+      <li>"Daisy Bell" (Harry Dacre, 1892), sung by an IBM mainframe at Bell Labs, 1961. <a href="https://en.wikipedia.org/wiki/Daisy_Bell" target="_blank">Wikipedia</a></li>
+      <li>J. Weizenbaum, <i>Computer Power and Human Reason</i> (1976); <a href="https://en.wikipedia.org/wiki/Joseph_Weizenbaum" target="_blank">Weizenbaum</a>, <a href="https://en.wikipedia.org/wiki/ELIZA" target="_blank">ELIZA</a>.</li>
+      <li>M. Kranzberg, "Technology and History: Kranzberg's Laws," <i>Technology and Culture</i> (1986). <a href="https://en.wikipedia.org/wiki/Melvin_Kranzberg" target="_blank">Kranzberg</a></li>
+    </ul>
+  </div>
+</div>
+
+<div class="wrap">
+  <!-- graph-above-text layout: the bigram graph and the generative output sit at
+       the top, where the reader watches. The control knobs move to the bottom so
+       they do not compete for attention while words are being generated. The
+       keyboard shortcuts live in each panel's heading, not a separate strip. -->
+
+  <section class="panel full" id="graphpanel">
+    <h2>Trained language model <span id="graphHeadDesigned">(<kbd>T</kbd> to randomize); each column is a part of speech</span></h2>
+    <div id="graphwrap"></div>
+    <div class="legend">
+      <span><i style="background:var(--accent)"></i>current word</span>
+      <span><i style="background:var(--opt0)"></i>choice 0</span>
+      <span><i style="background:var(--opt1)"></i>choice 1</span>
+      <span><i style="background:var(--stop)"></i>STOP (hidden token)</span>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Generated language (<kbd>&crarr;</kbd> for next, <kbd>space</kbd> to play/pause, <kbd>&larr;</kbd><kbd>&rarr;</kbd> for slower, faster)</h2>
+    <div id="output"></div>
+    <h2 style="margin-top:16px">Next-word choice</h2>
+    <div id="branch"></div>
+    <div class="note">Bright word = where we are. The chips are its choices in the graph; one is sampled.</div>
+  </section>
+
+  <section class="panel">
+    <h2>Training text<span id="trainKeys"> (<kbd>T</kbd> to randomize, <kbd>&uarr;</kbd><kbd>&darr;</kbd> tokens: fewer, more)</span></h2>
+    <div id="training"></div>
+    <div class="note" id="trnote"></div>
+  </section>
+
+  <section class="panel full">
+    <h2>Self-check &mdash; out-degrees recomputed from the displayed text</h2>
+    <div id="verdict"></div>
+    <div class="hist" id="hist"></div>
+    <div id="vtable"></div>
+    <div class="note">This recomputes the graph from the emitted tokens (not from how they were built),
+      so a green check means the text you see really does have the property.</div>
+  </section>
+
+  <section class="panel full" id="ctrlpanel">
+    <div id="controls">
+      <button id="play" class="primary" title="Play / pause (Space)">Play the walk</button>
+      <button id="step" title="Step one word (Enter)">Step one word</button>
+      <button id="reset" title="Reset the walk (R)">Reset</button>
+      <button id="regen" title="New training text (T)">Randomize text</button>
+      <label>Strategy
+        <select id="strategy">
+          <option value="A">lattice (strict k=2)</option>
+          <option value="M">mixed (k = 2 or 3)</option>
+          <option value="P">prose (objects + conjunctions)</option>
+          <option value="N" selected>natural (optional adjectives + prepositions)</option>
+          <option value="F">free function words</option>
+        </select>
+      </label>
+      <!-- Speed and token-count are driven by the arrow keys; these on-screen
+           buttons are the click/touch fallback (they call the same nudge fns).
+           Values live in hidden inputs so existing reads keep working. -->
+      <input type="hidden" id="lenSlider" value="2">
+      <input type="hidden" id="speed" value="650">
+      <span class="nudgegroup" id="tokenNudge"><span class="nudgelabel">tokens</span><button id="tokDown" title="Fewer tokens (Down arrow)">&minus;</button><button id="tokUp" title="More tokens (Up arrow)">+</button></span>
+      <span class="nudgegroup"><span class="nudgelabel">speed</span><button id="spdDown" title="Slower (Left arrow)">&minus;</button><button id="spdUp" title="Faster (Right arrow)">+</button></span>
+    </div>
+  </section>
+</div>
+
+<script>
+/* Password gate (client-side obfuscation only -- see note in markup). */
+(function () {
+  var PASSWORD = "monday";
+  var KEY = "llmwalk-unlocked";
+  document.body.classList.add("locked");
+  function unlock() {
+    document.getElementById("gate").classList.add("hidden");
+    document.body.classList.remove("locked");
+  }
+  if (sessionStorage.getItem(KEY) === "1") { unlock(); }
+  document.addEventListener("DOMContentLoaded", function () {
+    var form = document.getElementById("gateForm");
+    if (!form) return;
+    form.addEventListener("submit", function (e) {
+      e.preventDefault();
+      var pw = document.getElementById("gatePw").value;
+      if (pw === PASSWORD) { sessionStorage.setItem(KEY, "1"); unlock(); }
+      else { document.getElementById("gateErr").textContent = "Incorrect password."; }
+    });
+  });
+})();
+</script>
+<script>
+"use strict";
+
+/* =====================================================================
+   Deterministic PRNG (so a given "New training text" is reproducible
+   within a session, and Date.now is avoided per environment rules).
+   ===================================================================== */
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/* =====================================================================
+   POS POOLS (disjoint -> each surface string lives in one slot only,
+   which is what kills the out-degree aggregation trap)
+   ===================================================================== */
+// Vocabulary chosen to echo two touchstones in the history of language and
+// machines: Chomsky's "colorless green ideas sleep furiously" (Syntactic
+// Structures, 1957 -- a sentence that parses but means nothing) and Brautigan's
+// poem "All Watched Over by Machines of Loving Grace" (1967), whose imagery of
+// machines and nature in harmony the noun pool nods to. The lattice cycles
+// DET -> ADJ -> NOUN -> VERB, so the generated text reads as grammatical but
+// surreal lines in that spirit, e.g. "the colorless meadow dreams."
+// Word pools, slotted by true part of speech so the lattice (DET -> ADJ -> NOUN
+// -> VERB, cycling) composes into sentences that PARSE: "the green machine
+// dreams. then this tender daisy sleeps." The part-of-speech grouping is only an
+// authoring device for writing a training text that is both grammatical AND
+// exactly k=2 per word; the bigram model itself knows nothing of grammar. The
+// determiners all read before any adjective (no bare "a", so no a/an agreement
+// to handle); the verbs are intransitive and third-person singular, agreeing
+// with the singular noun. Vocabulary keeps the Chomsky/Brautigan/Strachey
+// register (see the Word sources tab).
+// Word pools drawn from the full set of touchstones in the Word sources tab, not
+// just Chomsky/Brautigan. Each entry is a generic English word evoking a source:
+// EVERY word below is verbatim in a named source text (verified against the
+// actual texts; see ref/word-sources/ in the repo). No made-up filler.
+// Chomsky, "colorless green ideas sleep furiously": colorless, green, idea, sleeps
+// Brautigan, "All Watched Over...": cybernetic, meadow, loving, the, and
+// White (quoting Orwell's Ecclesiastes parody): objective, machine, this, every,
+// that, yet -- and the conjunctions
+// Dartmouth 1955 proposal: intelligent, abstract, intelligence, conjecture,
+// concept, language, simulates, reasons, some, each, then
+// Weizenbaum (the ELIZA "delusional thinking" quote): delusional, program
+// Searle (Chinese Room): formal, syntax, semantics
+// Strachey's love-letter word lists (gingerbeardman/loveletter): tender, wistful,
+// passionate, darling, heart, yearns, adores, loves, treasures, woos
+// Slotted by true part of speech so the lattice still composes into grammatical
+// clauses; verbs are third-person singular.
+const POS_POOLS = {
+  DET: ["the", "this", "every", "some", "each", "that"],
+  ADJ: ["colorless", "green", "cybernetic", "objective", "intelligent", "abstract",
+        "formal", "delusional", "tender", "loving", "wistful", "passionate"],
+  NOUN: ["machine", "meadow", "idea", "language", "intelligence", "conjecture",
+         "program", "syntax", "semantics", "concept", "darling", "heart"],
+  VERB: ["sleeps", "simulates", "reasons", "yearns", "adores", "loves", "treasures", "woos"],
+  // sentence openers (successors of the period) and the period token itself
+  OPEN: ["then", "and", "yet"],
+  // prepositions for the "natural" strategy's optional prepositional phrase. Each is
+  // verbatim in a saved source (in: Dartmouth/White/Brautigan; of: same; with:
+  // White/Brautigan) -- see ref/word-sources/. No invented function words.
+  PREP: ["in", "of", "with"],
+  END_PUNCT: "."
+};
+
+const PERIOD = POS_POOLS.END_PUNCT;
+const STOP = "␃"; // internal STOP marker (Symbol-for-end-of-text), never displayed as a word
+
+/* =====================================================================
+   STRATEGY A: cyclic grammatical lattice with unique vocab.
+   Returns { tokens, designed } where
+     tokens = array of emitted training tokens (the displayed text)
+     designed = Map word -> [successors...] (the intended graph; the
+                verifier re-derives the empirical one independently)
+   ===================================================================== */
+function buildStrategyA(rng, width) {
+  const TEMPLATE = ["DET", "ADJ", "NOUN", "VERB"]; // one clause; cycles back to DET
+  // WIDTH = words per grammar slot. More words per column => bigger vocabulary,
+  // more edges, and a longer covering walk (the "Length" slider). Pools cap it
+  // at the smallest content pool (DET/VERB have 8), so 2..8 is the safe range.
+  const WIDTH = Math.max(2, Math.min(width || 4, 8));
+  const C = TEMPLATE.length;
+
+  // --- fill columns with globally-unique words ---
+  const used = new Set();
+  function drawUnique(pos, n) {
+    const pool = POS_POOLS[pos].filter(w => !used.has(w));
+    shuffle(pool, rng);
+    const picked = pool.slice(0, n);
+    picked.forEach(w => used.add(w));
+    return picked;
+  }
+  const columns = TEMPLATE.map(pos => drawUnique(pos, WIDTH)); // C columns x WIDTH words
+  const openers = (function () { const o = POS_POOLS.OPEN.slice(); shuffle(o, rng); return o.slice(0, 2); })();
+  openers.forEach(w => used.add(w));
+
+  // --- 2-out index map S_k -> S_{(k+1) mod C} : succ(i) = {2i, 2i+1} mod m ---
+  const designed = new Map();
+  for (let k = 0; k < C; k++) {
+    const cur = columns[k];
+    const nxt = columns[(k + 1) % C];
+    const m = nxt.length;
+    cur.forEach((w, i) => {
+      designed.set(w, [ nxt[(2 * i) % m], nxt[(2 * i + 1) % m] ]);
+    });
+  }
+
+  // --- terminating set: the VERB column (last slot of a clause). The PERIOD
+  // "." is the VISIBLE end-of-sequence token (the model's EOS). A verb can
+  // end a sentence, so each verb's successor set is exactly its 2 real
+  // DET successors PLUS the period: out-degree 3. This is the "k=3 for the
+  // pre-image of END" structure -- the period plays the role of END, shown
+  // in the text rather than hidden. Every NON-terminating word stays at
+  // exactly 2. The period itself is a normal k=2 node pointing to the two
+  // sentence openers, which point back into the first DET column, closing
+  // the cycle so the graph is strongly connected and edge-coverable. */
+  const verbs = columns[C - 1];
+  verbs.forEach(v => {
+    const real = designed.get(v).slice(0, 2); // 2 real successors (next-clause DETs)
+    designed.set(v, [ real[0], real[1], PERIOD ]); // verbs are k=3: 2 real + period
+  });
+  // period: k=2, points to the two openers (this is the EOS->next-sentence map)
+  designed.set(PERIOD, openers.slice());
+  // openers: k=2, point into the first DET column (indices 0,1)
+  openers.forEach((op, i) => {
+    designed.set(op, [ columns[0][(2 * i) % columns[0].length], columns[0][(2 * i + 1) % columns[0].length] ]);
+  });
+
+  // --- emit the displayed training text: a covering walk over the designed graph
+  // that traverses every edge at least once (Guan-route augmentation +
+  // Eulerian circuit; see coveringWalkEulerian). A verb->period step emits ".",
+  // and period->opener starts a fresh sentence, so the text reads as sentences.
+  const tokens = emitCoveringText_A(columns, openers, designed, rng);
+
+  const meta = {
+    terminating: new Set(verbs),
+    openers, columns, period: PERIOD, template: TEMPLATE,
+    startWord: columns[0][0]
+  };
+  return { tokens, designed, meta };
+}
+
+// =====================================================================
+// STRATEGY F: FREE FUNCTION WORDS. Content words (ADJ/NOUN/VERB) keep out-degree
+// 2; the function words -- determiners, the period, the openers -- are allowed to
+// branch to MANY successors, which is what gives real English its connective
+// tissue. This reads the most naturally and is the most honest about how real
+// bigram graphs look (function words are high out-degree, content words low).
+// The verifier reports the true distribution rather than asserting a flat k=2.
+// =====================================================================
+function buildStrategyF(rng, width) {
+  const WIDTH = Math.max(3, Math.min((width || 4) + 1, 8));
+  const used = new Set();
+  function draw(pos, n) { const pool = POS_POOLS[pos].filter(w => !used.has(w)); shuffle(pool, rng); const x = pool.slice(0, n); x.forEach(w => used.add(w)); return x; }
+  const dets = draw("DET", 2); // only a couple of determiners, but they fan out
+  const adjs = draw("ADJ", WIDTH);
+  const nouns = draw("NOUN", WIDTH);
+  const verbs = draw("VERB", WIDTH);
+  const openers = (function(){const o=POS_POOLS.OPEN.slice();shuffle(o,rng);return o.slice(0,2);})();
+  openers.forEach(w => used.add(w));
+
+  const designed = new Map();
+  // determiners branch FREELY to every adjective (high out-degree on purpose)
+  dets.forEach(d => designed.set(d, adjs.slice()));
+  // content words stay k=2
+  adjs.forEach((w, i) => designed.set(w, [ nouns[(2 * i) % nouns.length], nouns[(2 * i + 1) % nouns.length] ]));
+  nouns.forEach((w, i) => designed.set(w, [ verbs[(2 * i) % verbs.length], verbs[(2 * i + 1) % verbs.length] ]));
+  // verbs: 2 determiners (next clause) + period
+  verbs.forEach((w, i) => designed.set(w, [ dets[(2 * i) % dets.length], dets[(2 * i + 1) % dets.length], PERIOD ]));
+  // period branches freely to all openers + all determiners (connective tissue)
+  designed.set(PERIOD, openers.concat(dets));
+  openers.forEach(op => designed.set(op, dets.slice())); // openers fan to determiners
+
+  const start = dets[0];
+  const tokens = coveringWalkEulerian(designed, start, rng, PERIOD);
+  // terminating = verbs (degree 3); but here many words exceed 2, so the verifier
+  // runs in "report" mode (meta.freeForm) rather than asserting a flat k=2.
+  const meta = { terminating: new Set(verbs), openers, columns: [dets, adjs, nouns, verbs],
+                 period: PERIOD, template: ["free"], startWord: start, freeForm: true };
+  return { tokens, designed, meta };
+}
+
+// =====================================================================
+// STRATEGY M: MIXED k in {2,3}. Same grammatical lattice as the strict version,
+// but each word is given 2 OR 3 distinct successors (chosen at random). The
+// variable branching reads less mechanically than a flat k=2 while staying
+// tightly bounded -- nothing like real text's Zipfian sprawl. Verbs add the
+// period on top (so 3 or 4). The verifier runs in report mode, showing the true
+// 2-3 band rather than asserting a single value.
+// =====================================================================
+function buildStrategyM(rng, width) {
+  const TEMPLATE = ["DET", "ADJ", "NOUN", "VERB"];
+  const WIDTH = Math.max(3, Math.min(width || 4, 8)); // need >=3 so degree-3 is distinct
+  const C = TEMPLATE.length;
+  const used = new Set();
+  function drawUnique(pos, n) { const pool = POS_POOLS[pos].filter(w => !used.has(w)); shuffle(pool, rng); const x = pool.slice(0, n); x.forEach(w => used.add(w)); return x; }
+  const columns = TEMPLATE.map(pos => drawUnique(pos, WIDTH));
+  const openers = (function () { const o = POS_POOLS.OPEN.slice(); shuffle(o, rng); return o.slice(0, 2); })();
+  openers.forEach(w => used.add(w));
+
+  // each word -> 2 or 3 distinct successors in the next column (index i*2 onward)
+  const designed = new Map();
+  for (let k = 0; k < C; k++) {
+    const cur = columns[k], nxt = columns[(k + 1) % C], m = nxt.length;
+    cur.forEach((w, i) => {
+      const deg = (rng() < 0.5) ? 2 : 3; // mix of 2s and 3s
+      const succ = [];
+      for (let j = 0; j < deg; j++) succ.push(nxt[(2 * i + j) % m]);
+      designed.set(w, [...new Set(succ)]); // dedupe (small m can collide)
+    });
+  }
+  // verbs also get the period (so degree becomes 3 or 4)
+  const verbs = columns[C - 1];
+  verbs.forEach(v => designed.set(v, [...new Set([...designed.get(v), PERIOD])]));
+  designed.set(PERIOD, openers.slice());
+  openers.forEach((op, i) => designed.set(op, [columns[0][(2 * i) % columns[0].length], columns[0][(2 * i + 1) % columns[0].length]]));
+
+  const tokens = coveringWalkEulerian(designed, columns[0][0], rng, PERIOD);
+  const meta = { terminating: new Set(verbs), openers, columns, period: PERIOD,
+                 template: TEMPLATE, startWord: columns[0][0], freeForm: true };
+  return { tokens, designed, meta };
+}
+
+// =====================================================================
+// STRATEGY P: PROSE (transitive clauses joined by and/yet). Clauses are
+// subject + verb + OBJECT: DET -> ADJ -> NOUN(subject) -> VERB -> NOUN(object).
+// The CONJUNCTION/period attach after the OBJECT, not the verb -- so the object
+// noun is the clause-ender. Reads like "the green machine watches the clear river
+// and the tender engine holds the meadow." The conjunction appears mid-sentence
+// (after an object), so and/yet are no longer only sentence-openers. Subject and
+// object nouns use DISJOINT pool slices so no surface word lands in two slots
+// (the aggregation trap). Object nouns carry out-degree 2 (period, conjunction);
+// runs in report mode rather than asserting strict k=2.
+// =====================================================================
+function buildStrategyP(rng, width) {
+  // Subject and object nouns use disjoint NOUN-pool slices (no word in two slots,
+  // so no aggregation trap). NOUN pool has 9, so cap so both fit.
+  const WIDTH = Math.max(2, Math.min(width || 3, 4));
+  const used = new Set();
+  function draw(pos, n) { const pool = POS_POOLS[pos].filter(w => !used.has(w)); shuffle(pool, rng); const x = pool.slice(0, n); x.forEach(w => used.add(w)); return x; }
+  const dets = draw("DET", WIDTH);
+  const adjs = draw("ADJ", WIDTH);
+  const subj = draw("NOUN", WIDTH); // subject nouns
+  const verbs = draw("VERB", WIDTH);
+  const objs = draw("NOUN", WIDTH); // object nouns (disjoint from subjects)
+  const conj = draw("OPEN", 2); // and, yet
+
+  const designed = new Map();
+  const link = (col, nxt) => col.forEach((w, i) => designed.set(w, [nxt[(2 * i) % nxt.length], nxt[(2 * i + 1) % nxt.length]]));
+  link(dets, adjs); // the -> {green, clear}
+  link(adjs, subj); // green -> {machine, engine}
+  link(subj, verbs); // machine -> {watches, dreams}
+  // Verbs MIX transitive and intransitive (it's training data -- the bigram model
+  // does not care). Each verb -> {an object noun, the period, a conjunction}: it
+  // can take an object ("watches the river"), or end the clause intransitively
+  // ("dreams." / "dreams and ..."). Out-degree 3. Map verb i to object i (a
+  // permutation), so EVERY object is reached by exactly one verb -- verbs and
+  // objects are the same count (WIDTH). The old "2i mod m" only hit even indices
+  // when m was even, orphaning half the objects and breaking coverage at all
+  // widths except 3 (where 2i mod 3 happens to be a bijection).
+  verbs.forEach((v, i) => designed.set(v, [objs[i % objs.length], PERIOD, conj[i % conj.length]]));
+  // Object nouns are clause-final: each -> {period, a conjunction} (out-degree 2).
+  // This is where the conjunction attaches in the transitive case, after the
+  // object -- "...the river and ..." .
+  objs.forEach((o, i) => designed.set(o, [PERIOD, conj[i % conj.length]]));
+  // period -> the two conjunctions (sentence openers)
+  designed.set(PERIOD, conj.slice());
+  // each conjunction -> two determiners (starts a fresh clause, whether it arrived
+  // mid-sentence after a verb/object or at sentence start after a period)
+  conj.forEach((cw, i) => designed.set(cw, [dets[(2 * i) % dets.length], dets[(2 * i + 1) % dets.length]]));
+
+  // sentence-enders (for the verifier's report note) are verbs and objects
+  const enders = new Set([...verbs, ...objs]);
+  const tokens = coveringWalkEulerian(designed, dets[0], rng, PERIOD);
+  const meta = { terminating: enders, openers: conj,
+                 columns: [dets, adjs, subj, verbs, objs], period: PERIOD,
+                 template: ["DET", "ADJ", "NOUN", "VERB", "NOUN"], startWord: dets[0], freeForm: true };
+  return { tokens, designed, meta };
+}
+
+// =====================================================================
+// STRATEGY N: NATURAL. Relaxes the rigid DET->ADJ->NOUN->VERB lockstep toward
+// real English while every word stays verbatim from a source and the covering
+// walk + guard still apply (report mode). Two relaxations, each an extra edge
+// that returns to the main cycle so the graph stays STRONGLY CONNECTED and the
+// per-node in/out degrees stay balanceable (the covering walk needs both):
+// 1. Optional adjective: a determiner -> {an adjective, a noun}, so both
+// "the machine" and "the tender machine" occur.
+// 2. Optional prepositional phrase: a noun -> {its verb, a preposition}; the
+// preposition -> determiners, re-entering the noun-phrase cycle, so
+// "the idea in the meadow sleeps" can occur.
+// All maps use the same i-indexed pattern as Strategy A/P so every target is hit
+// the same number of times it is left (keeps the graph Eulerian-augmentable).
+// =====================================================================
+function buildStrategyN(rng, width) {
+  const W = Math.max(2, Math.min(width || 3, 4));
+  const used = new Set();
+  function draw(pos, n) { const pool = POS_POOLS[pos].filter(w => !used.has(w)); shuffle(pool, rng); const x = pool.slice(0, n); x.forEach(w => used.add(w)); return x; }
+  const dets = draw("DET", W);
+  const adjs = draw("ADJ", W);
+  const nouns = draw("NOUN", W); // subject + PP-object nouns (shared)
+  const verbs = draw("VERB", W);
+  const preps = draw("PREP", W <= 2 ? 1 : 2); // in (, of)
+  const conj = draw("OPEN", 2); // and, yet
+
+  const designed = new Map();
+  const at = (arr, k) => arr[((k % arr.length) + arr.length) % arr.length];
+
+  // Helper: distribute the determiner indices 0..W-1 across `k` re-entry nodes so
+  // that EVERY determiner is a target of some node (no orphaned determiner -> the
+  // graph stays strongly connected and the covering walk can balance it). Each
+  // re-entry node gets a contiguous, wrapping pair of determiners.
+  const detSlice = (slot, k) => {
+    const per = Math.max(2, Math.ceil(dets.length / k));
+    const out = [];
+    for (let j = 0; j < per; j++) out.push(at(dets, slot * per + j));
+    return [...new Set(out)].slice(0, Math.max(2, per));
+  };
+
+  // determiner i -> {adj i, noun i}: optional adjective (out-degree 2).
+  dets.forEach((d, i) => designed.set(d, [at(adjs, i), at(nouns, i)]));
+  // adjective i -> {noun i, noun i+1}: two nouns.
+  adjs.forEach((a, i) => designed.set(a, [at(nouns, i), at(nouns, i + 1)]));
+  // noun i -> {verb i, prep i}: optional prepositional phrase (out-degree 2).
+  nouns.forEach((n, i) => designed.set(n, [at(verbs, i), at(preps, i)]));
+  // preposition slot -> a slice of determiners (opens the PP's noun phrase). The
+  // preps collectively cover every determiner.
+  preps.forEach((p, i) => designed.set(p, detSlice(i, preps.length)));
+  // verb i -> {noun i, period, conj i}: object (transitive), end, or join.
+  verbs.forEach((v, i) => designed.set(v, [at(nouns, i), PERIOD, at(conj, i)]));
+  // period -> the two conjunctions (sentence openers).
+  designed.set(PERIOD, conj.slice());
+  // conjunction slot -> a slice of determiners; the conjunctions also collectively
+  // cover every determiner, so a fresh clause can start with any of them.
+  conj.forEach((cw, i) => designed.set(cw, detSlice(i, conj.length)));
+
+  const enders = new Set(verbs);
+  const tokens = coveringWalkEulerian(designed, dets[0], rng, PERIOD);
+  const meta = { terminating: enders, openers: conj,
+                 columns: [dets, adjs, nouns, verbs, preps], period: PERIOD,
+                 template: ["DET", "ADJ", "NOUN", "VERB", "PREP"], startWord: dets[0], freeForm: true };
+  return { tokens, designed, meta };
+}
+
+function emitCoveringText_A(columns, openers, designed, rng) {
+  // Covering walk over the FULL designed graph (verbs carry the period as a third
+  // edge; the period carries two opener edges). The walk traverses every designed
+  // edge at least once -> the empirical graph equals the designed graph: verbs end
+  // at degree 3 (2 real + period), everything else 2. A verb->period step emits
+  // ".", then period->opener starts a new sentence, so the text reads as sentences.
+  return coveringWalkEulerian(designed, columns[0][0], rng, PERIOD);
+}
+
+// Covering walk = the FEWEST words that still show every k=2 edge. We want an
+// Eulerian circuit (each designed edge traversed exactly once), but the lattice
+// is not degree-balanced (e.g. the first determiners are pointed to more often
+// than they point out), so a single Eulerian trail cannot cover every edge once.
+// We fix that with directed Guan-route augmentation: add the minimum number
+// of DUPLICATE edges (routed along shortest paths) to make in-degree = out-degree
+// everywhere, then take an Eulerian circuit over the augmented multigraph with
+// Hierholzer. Originals appear once, the few duplicates appear twice; the result
+// is the shortest closed walk covering all edges. Length therefore tracks the
+// edge count, which tracks vocabulary -- the Length slider in its purest form.
+function coveringWalkEulerian(designed, start, rng, endOn) {
+  const nodes = new Set();
+  for (const [u, succ] of designed) { nodes.add(u); succ.forEach(v => nodes.add(v)); }
+
+  // --- multigraph adjacency (a list; duplicates are just repeated entries) ---
+  const adj = new Map([...nodes].map(n => [n, []]));
+  for (const [u, succ] of designed) for (const v of succ) adj.get(u).push(v);
+
+  // --- directed-degree imbalance d(v) = out - in ---
+  const indeg = new Map([...nodes].map(n => [n, 0]));
+  for (const [, vs] of adj) for (const v of vs) indeg.set(v, indeg.get(v) + 1);
+  const surplusOut = [], surplusIn = []; // d>0 emit too much; d<0 receive too much
+  for (const n of nodes) {
+    const d = adj.get(n).length - indeg.get(n);
+    for (let k = 0; k < d; k++) surplusOut.push(n); // needs extra IN
+    for (let k = 0; k < -d; k++) surplusIn.push(n); // needs extra OUT
+  }
+
+  // --- shortest path (BFS over designed edges) from a to b, as a node list ---
+  function shortestPath(a, b) {
+    if (a === b) return [a];
+    const prev = new Map([[a, null]]), q = [a];
+    while (q.length) {
+      const x = q.shift();
+      for (const y of designed.get(x) || []) {
+        if (!prev.has(y)) { prev.set(y, x); if (y === b) { const path = [b]; let c = b; while ((c = prev.get(c)) !== null) path.push(c); return path.reverse(); } q.push(y); }
+      }
+    }
+    return null;
+  }
+
+  // --- Augment to balance the graph (directed Guan-route): pair each
+  // surplus-IN node (needs an extra out-route) with a surplus-OUT node and
+  // duplicate the shortest path between them, so every vertex ends with
+  // in-degree = out-degree and an Eulerian circuit exists. The duplicated edges
+  // are the unavoidable repeats forced by the lattice's geometry. (A min-cost
+  // matching here was tried and removed: it produced no measurable length
+  // reduction because the imbalanced nodes sit on opposite sides of the cycle, so
+  // every augmentation path is long regardless of pairing. See doc/nofake-audit.)
+  for (let i = 0; i < surplusIn.length; i++) {
+    const path = shortestPath(surplusIn[i], surplusOut[i % surplusOut.length])
+              || shortestPath(surplusOut[i % surplusOut.length], surplusIn[i]);
+    if (!path) continue;
+    for (let k = 0; k < path.length - 1; k++) adj.get(path[k]).push(path[k + 1]);
+  }
+
+  // --- Hierholzer over the balanced multigraph (Eulerian circuit) ---
+  // Recency-aware: when a node has several unused out-edges, take the one whose
+  // TARGET was visited longest ago. This spreads the unavoidable duplicate edges
+  // out instead of clustering them into back-to-back repeated phrases ("...river
+  // glows ... river glows"), so the training text flows forward instead of
+  // stuttering. It does not change which edges are covered, only their order.
+  const rem = new Map([...adj].map(([k, v]) => { const a = v.slice(); shuffle(a, rng); return [k, a]; }));
+  const lastSeen = new Map(); // node -> step index it was last entered
+  let step = 0;
+  const stack = [start], circuit = [];
+  while (stack.length) {
+    const v = stack[stack.length - 1];
+    const out = rem.get(v);
+    if (out && out.length) {
+      // pick the unused edge whose target is the most "stale" (or never seen)
+      let bestIdx = 0, bestSeen = Infinity;
+      for (let i = 0; i < out.length; i++) {
+        const seen = lastSeen.has(out[i]) ? lastSeen.get(out[i]) : -1;
+        if (seen < bestSeen) { bestSeen = seen; bestIdx = i; }
+      }
+      const next = out.splice(bestIdx, 1)[0];
+      lastSeen.set(next, ++step);
+      stack.push(next);
+    } else {
+      circuit.push(stack.pop());
+    }
+  }
+  circuit.reverse();
+
+  // rotate so the walk ends on a period (it is a circuit, so any rotation is a
+  // valid walk covering the same edges); prefer ending right after a verb->period.
+  let tokens = circuit;
+  let endIdx = -1;
+  for (let i = 1; i < tokens.length; i++) if (tokens[i] === endOn) { endIdx = i; break; }
+  if (endIdx > 0) {
+    // rotate the circuit (drop the duplicated closing node) to start after the
+    // period and end on it.
+    const body = tokens.slice(0, tokens.length - 1); // circuit start==end; drop dup
+    const rot = body.slice(endIdx).concat(body.slice(0, endIdx));
+    tokens = rot.concat([endOn]);
+  } else {
+    let g = 0;
+    while (tokens[tokens.length - 1] !== endOn && g++ < 16) {
+      const succ = designed.get(tokens[tokens.length - 1]);
+      if (!succ || !succ.length) break;
+      tokens.push(succ.includes(endOn) ? endOn : succ[Math.floor(rng() * succ.length)]);
+    }
+  }
+
+  return tokens;
+}
+
+
+/* =====================================================================
+   VERIFIER (EDA gate): recompute empirical bigram graph from emitted
+   tokens and check out-degrees against the model rules.
+   ===================================================================== */
+function verifyEmpirical(tokens, meta) {
+  const succ = new Map();
+  const nodes = new Set(tokens);
+  for (let i = 0; i < tokens.length - 1; i++) {
+    if (!succ.has(tokens[i])) succ.set(tokens[i], new Set());
+    succ.get(tokens[i]).add(tokens[i + 1]);
+  }
+  const terminating = meta.terminating || new Set();
+  const rows = [];
+  let ok = true;
+  const hist = {}; // out-degree -> count
+  for (const w of nodes) {
+    const d = succ.has(w) ? succ.get(w).size : 0;
+    hist[d] = (hist[d] || 0) + 1;
+    // Expected out-degree:
+    // period -> 2 (points to the two sentence openers)
+    // terminating -> 3 (2 real successors + the period, the visible EOS)
+    // other words -> 2
+    // The single final token of a finite text has no successor; that is the
+    // only legitimate degree-0 (flagged as a benign "text end" note, not fail).
+    const expected = (w === PERIOD) ? 2 : (terminating.has(w) ? 3 : 2);
+    let bad = false, warn = false;
+    if (d === 0 && onlyAtEnd(tokens, w)) {
+      warn = true; // benign: appears only as the last token
+    } else if (d !== expected) {
+      bad = true;
+    }
+    if (bad) ok = false;
+    if (bad || warn) {
+      rows.push({ word: displayWord(w), d, expected: (warn ? "0 (text end)" : expected),
+                  succ: [...(succ.get(w) || [])].map(displayWord).join(", "),
+                  cls: bad ? "bad" : "warn" });
+    }
+  }
+  return { ok, rows, hist, succ, expectedNote: terminating.size
+    ? "expected: most words 2; sentence-ending words 3 (their 2 next-words plus the period)."
+    : "expected: every word 2." };
+}
+function onlyAtEnd(tokens, w) {
+  for (let i = 0; i < tokens.length - 1; i++) if (tokens[i] === w) return false;
+  return tokens[tokens.length - 1] === w;
+}
+
+/* =====================================================================
+   small utilities
+   ===================================================================== */
+function shuffle(arr, rng) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+function displayWord(w) { if (w == null) return ""; return w === PERIOD ? "." : w; }
+// Capitalize the first letter for display only -- used to capitalize the word
+// that begins a sentence (the token after a period). The graph stays lowercase,
+// so case never affects the DAG; this is purely for eye-scanning the text.
+function capFirst(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
+// Is this displayed token a sentence-ending punctuation mark?
+function isSentenceEnd(w) { return w === PERIOD || /^[.!?]+$/.test(w); }
+
+/* =====================================================================
+   ARBITRARY TEXT ANALYZER (the "analyze as-is" path)
+   Tokenize any text, build the REAL bigram graph with frequencies, and
+   package it in the same shape the renderer consumes. Out-degrees are
+   whatever the text gives (1 .. hundreds); no k=2 constraint here.
+   ===================================================================== */
+function tokenize(raw) {
+  // words and sentence-final punctuation are tokens; everything else dropped.
+  // Lowercase so "The" and "the" share a node (a real bigram model choice).
+  const out = [];
+  const re = /[A-Za-z][A-Za-z'\u2019-]*|[.!?]/g;
+  let m;
+  while ((m = re.exec(raw)) !== null) out.push(m[0].toLowerCase());
+  return out;
+}
+
+function analyzeText(raw, label) {
+  const tokens = tokenize(raw);
+  // frequency-weighted successor map: Map<word, Map<succ, count>>
+  const freq = new Map();
+  for (let i = 0; i < tokens.length - 1; i++) {
+    if (!freq.has(tokens[i])) freq.set(tokens[i], new Map());
+    const m = freq.get(tokens[i]);
+    m.set(tokens[i + 1], (m.get(tokens[i + 1]) || 0) + 1);
+  }
+  // a plain successor-list view (for the graph + any uniform fallbacks)
+  const designed = new Map([...freq].map(([w, m]) => [w, [...m.keys()]]));
+  const startWord = tokens.length ? tokens[0] : null;
+  const meta = { arbitrary: true, label: label || "your text", startWord,
+                 terminating: new Set() };
+  return { tokens, designed, freq, meta };
+}
+
+/* =====================================================================
+   APP STATE + WIRING
+   ===================================================================== */
+const els = {
+  training: document.getElementById("training"),
+  output: document.getElementById("output"),
+  branch: document.getElementById("branch"),
+  verdict: document.getElementById("verdict"),
+  vtable: document.getElementById("vtable"),
+  hist: document.getElementById("hist"),
+  graphwrap: document.getElementById("graphwrap"),
+  trnote: document.getElementById("trnote"),
+  play: document.getElementById("play"),
+  step: document.getElementById("step"),
+  reset: document.getElementById("reset"),
+  regen: document.getElementById("regen"),
+  strategy: document.getElementById("strategy"),
+  speed: document.getElementById("speed"),
+  lenSlider: document.getElementById("lenSlider"),
+};
+
+let MODEL = null; // { tokens, designed, meta, succ, occ, edgePos, spans }
+let walk = null; // current generation state
+let timer = null;
+let seed = 1234;
+
+// SOURCE describes what to model: {kind:"designed", strategy} or
+// {kind:"text", raw, label}. buildModel() builds MODEL and renders everything.
+let SOURCE = { kind: "designed", strategy: "N", width: 2 }; // start at fewest tokens; natural strategy by default
+
+function buildModel() {
+  let built;
+  if (SOURCE.kind === "text") {
+    built = analyzeText(SOURCE.raw, SOURCE.label);
+  } else {
+    const rng = mulberry32(seed >>> 0);
+    const width = SOURCE.width || 3;
+    built = SOURCE.strategy === "F" ? buildStrategyF(rng, width)
+          : SOURCE.strategy === "N" ? buildStrategyN(rng, width)
+          : SOURCE.strategy === "P" ? buildStrategyP(rng, width)
+          : SOURCE.strategy === "M" ? buildStrategyM(rng, width)
+          : buildStrategyA(rng, width);
+  }
+  const { tokens, designed, meta } = built;
+  MODEL = { tokens, designed, meta, freq: built.freq || null, spans: [] };
+
+  // occurrences + edge positions (for highlight-in-place)
+  const occ = new Map();
+  tokens.forEach((w, i) => { if (!occ.has(w)) occ.set(w, []); occ.get(w).push(i); });
+  const edgePos = new Map();
+  for (let i = 0; i < tokens.length - 1; i++) {
+    const key = tokens[i] + "\u0001" + tokens[i + 1];
+    if (!edgePos.has(key)) edgePos.set(key, []);
+    edgePos.get(key).push(i);
+  }
+  MODEL.occ = occ; MODEL.edgePos = edgePos;
+  // freeForm strategies (function words branch widely) report the real out-degree
+  // distribution like arbitrary text, rather than asserting a flat k=2.
+  MODEL.verify = (meta.arbitrary || meta.freeForm) ? statsArbitrary(tokens) : verifyEmpirical(tokens, meta);
+
+  // BUILD-TIME GUARD (for every DESIGNED strategy, including report-mode ones):
+  // the displayed text's bigram graph MUST equal the graph drawn in the panel.
+  // Report-mode strategies (mixed/free/prose) skip the PASS/FAIL degree gate, so
+  // without this a graph/text mismatch could ship silently (it did once -- the
+  // prose width!=3 bug). This assertion catches any such mismatch and surfaces it.
+  if (!meta.arbitrary) {
+    const cov = assertGraphMatchesText(tokens, designed);
+    MODEL.coverage = cov;
+    if (!cov.ok) MODEL.verify = { ...MODEL.verify, ok: false, coverageFail: cov };
+  }
+
+  renderTraining();
+  renderVerifier();
+  renderGraph();
+  resetWalk();
+}
+
+// Recompute the empirical bigram graph from the emitted tokens and require it to
+// equal the designed graph: no SPURIOUS adjacency (a token pair that is not a
+// designed edge) and no UNCOVERED designed edge (an edge the text never shows).
+// Returns { ok, spurious:[...], uncovered:[...] }. This is the hard, strategy-
+// agnostic correctness check; the per-word degree histogram is a separate, softer
+// view for report-mode strategies.
+function assertGraphMatchesText(tokens, designed) {
+  const designedEdges = new Set();
+  for (const [u, succ] of designed) for (const v of succ) designedEdges.add(u + "" + v);
+  const textEdges = new Set();
+  for (let i = 0; i < tokens.length - 1; i++) textEdges.add(tokens[i] + "" + tokens[i + 1]);
+  const spurious = [], uncovered = [];
+  for (const e of textEdges) if (!designedEdges.has(e)) spurious.push(e.replace("", " -> "));
+  for (const e of designedEdges) if (!textEdges.has(e)) uncovered.push(e.replace("", " -> "));
+  return { ok: spurious.length === 0 && uncovered.length === 0, spurious, uncovered };
+}
+
+// Stats for arbitrary text (no pass/fail; just the real out-degree profile).
+function statsArbitrary(tokens) {
+  const succ = new Map();
+  for (let i = 0; i < tokens.length - 1; i++) {
+    if (!succ.has(tokens[i])) succ.set(tokens[i], new Set());
+    succ.get(tokens[i]).add(tokens[i + 1]);
+  }
+  const hist = {};
+  let sum = 0, n = 0, maxDeg = 0, maxWord = null;
+  for (const [w, set] of succ) {
+    const d = set.size; hist[d] = (hist[d] || 0) + 1; sum += d; n++;
+    if (d > maxDeg) { maxDeg = d; maxWord = w; }
+  }
+  // words with no successor (e.g. final token) show as degree 0
+  for (const w of new Set(tokens)) if (!succ.has(w)) hist[0] = (hist[0] || 0) + 1;
+  return { arbitrary: true, ok: true, rows: [], hist, succ,
+           avg: n ? (sum / n) : 0, maxDeg, maxWord };
+}
+
+function renderTraining() {
+  els.training.innerHTML = "";
+  MODEL.spans = [];
+  const arb = MODEL.meta.arbitrary;
+  MODEL.tokens.forEach((w, i) => {
+    const isPunct = arb ? /^[.!?,;:]+$/.test(w) : (w === PERIOD);
+    // capitalize a word that starts a sentence (first token, or after a period)
+    const startsSentence = !isPunct && (i === 0 || isSentenceEnd(MODEL.tokens[i - 1]));
+    // Put the separating space BEFORE each token, and skip it before punctuation,
+    // so a period hugs the previous word: "yearns. And", not "yearns . And".
+    const leadingPunct = i === 0 && isPunct; // a hidden leading period
+    if (i > 0 && !isPunct) els.training.appendChild(document.createTextNode(" "));
+    const span = document.createElement("span");
+    span.className = "tok" + (isPunct ? " period" : "");
+    span.textContent = startsSentence ? capFirst(displayWord(w)) : displayWord(w);
+    span.dataset.pos = i;
+    // A leading period reads oddly (sentence boundary with no sentence before it).
+    // Hide it VISUALLY only -- keep the span so MODEL.spans stays index-aligned.
+    if (leadingPunct) { span.style.display = "none"; }
+    els.training.appendChild(span);
+    MODEL.spans.push(span);
+  });
+  if (arb) {
+    const v = MODEL.verify;
+    els.trnote.textContent =
+      `${MODEL.tokens.length} tokens, ${new Set(MODEL.tokens).size} distinct words. `
+      + `Average branching ${v.avg.toFixed(1)} next-words; busiest word "${displayWord(v.maxWord)}" `
+      + `has ${v.maxDeg} different continuations. Real text is nothing like uniform.`;
+  } else {
+    const verbs = MODEL.meta.terminating ? [...MODEL.meta.terminating].map(displayWord).join(", ") : "";
+    els.trnote.textContent =
+      `${MODEL.tokens.length} tokens, ${new Set(MODEL.tokens).size} distinct words. `
+      + (verbs ? `Sentence-ending words (out-degree 3 = two next-words + the period "."): ${verbs}.` : "");
+  }
+}
+
+function renderVerifier() {
+  const v = MODEL.verify;
+  // "report mode" = arbitrary text OR a free-function-word strategy: show the real
+  // out-degree distribution instead of a flat k=2 pass/fail.
+  const report = MODEL.meta.arbitrary || MODEL.meta.freeForm;
+  const arb = report;
+  els.verdict.className = arb ? "stats" : (v.ok ? "ok" : "fail");
+  // Build-time coverage guard failure overrides everything: the displayed text's
+  // graph does not match the drawn graph. This must never happen; if it does the
+  // banner is red and generation is disabled, even for report-mode strategies.
+  if (MODEL.coverage && !MODEL.coverage.ok) {
+    els.verdict.className = "fail";
+    const c = MODEL.coverage;
+    els.verdict.textContent = "GRAPH/TEXT MISMATCH ✗ the displayed text does not match the drawn graph"
+      + (c.spurious.length ? "; spurious edges: " + c.spurious.slice(0, 4).join(", ") : "")
+      + (c.uncovered.length ? "; uncovered edges: " + c.uncovered.slice(0, 4).join(", ") : "")
+      + ". Generation disabled (this is a build-time bug).";
+    els.play.disabled = els.step.disabled = true;
+    els.hist.innerHTML = ""; els.vtable.innerHTML = "";
+    return;
+  }
+  if (MODEL.meta.freeForm) {
+    els.verdict.textContent =
+      "MIXED OUT-DEGREE - content words (adjectives, nouns, verbs) each have exactly 2 "
+      + "successors; the function words (determiners, the period) branch widely, which is "
+      + "what gives real language its connective tissue. The histogram shows both.";
+  } else if (arb) {
+    els.verdict.textContent =
+      "REAL BIGRAM GRAPH - out-degrees are whatever the text gives. "
+      + "The tall left bars (degree 1) are words seen with only one continuation; "
+      + "the long tail to the right is the branchiest words. A real model walks THIS.";
+  } else {
+    els.verdict.textContent = v.ok
+      ? "PASS \u2713 " + v.expectedNote + " The displayed text matches; the walk is well defined."
+      : "INVARIANT VIOLATED \u2717 a word's out-degree does not match the rule below. Generation disabled.";
+  }
+
+  // histogram (shared). For arbitrary text there can be many buckets; cap display.
+  els.hist.innerHTML = "";
+  const degs = Object.keys(v.hist).map(Number).sort((a, b) => a - b);
+  const maxc = Math.max(1, ...Object.values(v.hist));
+  degs.forEach(d => {
+    const bar = document.createElement("div");
+    bar.className = "bar";
+    bar.style.height = (8 + 50 * v.hist[d] / maxc) + "px";
+    if (!arb) {
+      if (d !== 2 && d !== 0) bar.style.background = "var(--bad)";
+      if (d === 0) bar.style.background = "var(--warn)";
+    }
+    bar.innerHTML = `<b>${v.hist[d]}</b><span>${d}</span>`;
+    els.hist.appendChild(bar);
+  });
+
+  if (!arb && v.rows.length) {
+    let html = "<table><tr><th>word</th><th>out-degree</th><th>expected</th><th>successors</th></tr>";
+    v.rows.forEach(r => {
+      html += `<tr><td>${r.word}</td><td class="${r.cls}">${r.d}</td><td>${r.expected}</td><td>${r.succ}</td></tr>`;
+    });
+    html += "</table>";
+    els.vtable.innerHTML = html;
+  } else {
+    els.vtable.innerHTML = "";
+  }
+  els.play.disabled = els.step.disabled = (!arb && !v.ok);
+}
+
+/* ---------- graph SVG (columns by grammar slot) ---------- */
+let GRAPH = null;
+function renderGraph() {
+  if (MODEL.meta.arbitrary) { renderLocalGraph(); return; }
+  renderColumnGraph();
+}
+
+// Designed mode: full columnar lattice (small vocab).
+function renderColumnGraph() {
+  const cols = MODEL.meta.columns || [];
+  const designed = MODEL.designed;
+  const layout = [];
+  cols.forEach((col, ci) => col.forEach((w, ri) => layout.push({ w, x: ci, y: ri })));
+  const extraX = cols.length;
+  const openers = MODEL.meta.openers || [];
+  layout.push({ w: PERIOD, x: extraX, y: 0 });
+  openers.forEach((o, i) => layout.push({ w: o, x: extraX, y: 1 + i }));
+
+  const pos = new Map(layout.map(n => [n.w, n]));
+  const colW = 150, rowH = 56, padX = 60, padY = 36;
+  const W = padX * 2 + extraX * colW + 120;
+  const H = padY * 2 + Math.max(3, ...layout.map(n => n.y)) * rowH + 40;
+  const X = n => padX + n.x * colW, Y = n => padY + n.y * rowH;
+
+  let edges = "";
+  const EDGE_TINTS = ["#f0a868", "#5cc8c0", "#b48ce0", "#8cc66a", "#e08ca0", "#c0b050", "#6aa8e0", "#d99090"];
+  for (const [u, succ] of designed) {
+    const pu = pos.get(u); if (!pu) continue;
+    // tint all edges from a node the same color (by its row), so a node's small
+    // bundle of out-edges is one hue -- easier to count than uniform gray lines.
+    const tint = EDGE_TINTS[pu.y % EDGE_TINTS.length];
+    succ.forEach(v => {
+      const pv = pos.get(v); if (!pv) return;
+      const x1 = X(pu) + 46, y1 = Y(pu) + 11, x2 = X(pv) - 6, y2 = Y(pv) + 11, mx = (x1 + x2) / 2;
+      edges += `<path class="gedge" data-u="${cssEsc(u)}" data-v="${cssEsc(v)}" style="stroke:${tint}" d="M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}"></path>`;
+    });
+  }
+  let nodes = "";
+  layout.forEach(n => {
+    const x = X(n), y = Y(n);
+    nodes += `<g data-w="${cssEsc(n.w)}"><rect class="gnode" x="${x}" y="${y}" rx="7" width="52" height="22"></rect><text x="${x + 26}" y="${y + 15}" text-anchor="middle">${displayWord(n.w)}</text></g>`;
+  });
+  els.graphwrap.innerHTML = svgWrap(W, H, edges + nodes);
+  GRAPH = els.graphwrap.querySelector("svg");
+  attachGraphHover();
+}
+
+// Hover a node to spotlight its outgoing edges: the node's 2 out-edges (3 for a
+// verb) stay bright while every other edge fades, so the out-degree is legible
+// even when the whole graph looks like crossing spaghetti.
+function attachGraphHover() {
+  if (!GRAPH) return;
+  GRAPH.querySelectorAll("g[data-w]").forEach(g => {
+    const w = g.getAttribute("data-w");
+    g.style.cursor = "pointer";
+    g.addEventListener("mouseenter", () => {
+      GRAPH.classList.add("dimmable");
+      g.querySelector(".gnode")?.classList.add("hl");
+      GRAPH.querySelectorAll(`.gedge[data-u="${cssEsc(w)}"]`).forEach(e => e.classList.add("hl"));
+    });
+    g.addEventListener("mouseleave", () => {
+      GRAPH.classList.remove("dimmable");
+      g.querySelector(".gnode")?.classList.remove("hl");
+      GRAPH.querySelectorAll(".gedge.hl").forEach(e => e.classList.remove("hl"));
+    });
+  });
+}
+
+// Arbitrary mode: vocab is huge, so draw only the LOCAL neighborhood of the
+// current word -- the word in the centre with its (weighted) successors fanned
+// out to the right. Redrawn each step as the walk moves.
+function renderLocalGraph(centre) {
+  const cur = centre || MODEL.meta.startWord;
+  const freq = MODEL.freq.get(cur) || new Map();
+  const succ = [...freq.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12); // top 12 by frequency
+  const W = 560, rowH = 30, padY = 24;
+  const H = Math.max(120, padY * 2 + succ.length * rowH);
+  const cx = 60, cy = H / 2;
+  let edges = "", nodes = "";
+  const total = succ.reduce((a, [, c]) => a + c, 0) || 1;
+  succ.forEach(([v, c], i) => {
+    const vy = padY + i * rowH + 8, vx = 300;
+    const w = 1 + 3 * (c / total);
+    edges += `<path class="gedge" data-u="${cssEsc(cur)}" data-v="${cssEsc(v)}" style="stroke-width:${w}" d="M${cx + 50},${cy} C200,${cy} 200,${vy + 8} ${vx - 4},${vy + 8}"></path>`;
+    nodes += `<g data-w="${cssEsc(v)}"><rect class="gnode" x="${vx}" y="${vy}" rx="7" width="120" height="18"></rect><text x="${vx + 60}" y="${vy + 13}" text-anchor="middle">${displayWord(v)} (${c})</text></g>`;
+  });
+  nodes += `<g data-w="${cssEsc(cur)}"><rect class="gnode active" x="${cx}" y="${cy - 11}" rx="7" width="100" height="22"></rect><text x="${cx + 50}" y="${cy + 4}" text-anchor="middle">${displayWord(cur)}</text></g>`;
+  const more = (freq.size > succ.length) ? `<text x="${300}" y="${H - 6}" fill="var(--muted)">+${freq.size - succ.length} more continuations…</text>` : "";
+  els.graphwrap.innerHTML = svgWrap(W, H, edges + nodes + more);
+  GRAPH = els.graphwrap.querySelector("svg");
+}
+
+function svgWrap(W, H, inner) {
+  // Carry the intrinsic width so CSS can scale the figure down to fit a phone
+  // (width:100% on a narrow screen) without ever upscaling past native size on
+  // desktop (max-width = W). The viewBox makes the scaling clean and crisp.
+  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="max-width:${W}px" preserveAspectRatio="xMinYMin meet"><defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="var(--line)"></path></marker></defs>${inner}</svg>`;
+}
+
+function cssEsc(s) { return String(s).replace(/"/g, "&quot;"); }
+
+/* =====================================================================
+   GENERATION (random walk) + highlight-in-place
+   ===================================================================== */
+function resetWalk() {
+  stopTimer();
+  els.play.textContent = "Play";
+  const start = MODEL.meta.startWord;
+  walk = {
+    cur: start, steps: 0, done: false, lastPos: null,
+    out: [{ w: start, branch: "start" }]
+  };
+  clearHighlights();
+  renderOutput();
+  // place cursor on first occurrence of start
+  const occ = MODEL.occ.get(start);
+  if (occ && occ.length) setCursor(occ[0]);
+  showBranchFor(start);
+}
+
+function successorsForGen(w) {
+  // Each successor is {label,target,kind,weight}. The designed graph stores a
+  // plain successor list (uniform weight 1). Arbitrary text stores a frequency
+  // map so likelier continuations get more weight, like a real bigram model.
+  // kind "stop" = an end-of-sentence token (period in designed mode, or
+  // sentence-final punctuation in arbitrary mode); sampling it halts the walk.
+  const freq = MODEL.freq && MODEL.freq.get(w); // Map<succ,count> for arbitrary text
+  if (freq) {
+    return [...freq.entries()].map(([t, c], i) => ({
+      label: displayWord(t), target: t, idx: i, weight: c,
+      kind: isStopToken(t) ? "stop" : "real"
+    }));
+  }
+  const succ = MODEL.designed.get(w) || [];
+  return succ.map((t, i) => t === PERIOD
+    ? { label: ".", target: PERIOD, kind: "stop", idx: i, weight: 1 }
+    : { label: t, target: t, kind: "real", idx: i, weight: 1 });
+}
+
+// In arbitrary-text mode a token is a "stop" if it is sentence-final
+// punctuation. In designed mode only the period is a stop (handled above).
+function isStopToken(t) {
+  return MODEL.meta.arbitrary && /^[.!?]+$/.test(t);
+}
+
+// Sample the next word PROPORTIONAL TO OBSERVED FREQUENCY -- exactly Shannon's
+// construction (first written in his 1945 cryptography memo, reused in the 1948
+// communication paper). A word that followed the current word 9 times out of 10
+// is chosen ~90% of the time. There is no "temperature": Shannon's model just
+// samples from the empirical conditional distribution. (In the designed k=2
+// demo all weights are 1, so this is a fair coin among the choices.)
+function sampleOption(options, rng) {
+  const s = options.reduce((a, o) => a + Math.max(o.weight, 0), 0) || 1;
+  let r = rng() * s;
+  for (let i = 0; i < options.length; i++) { r -= Math.max(options[i].weight, 0); if (r <= 0) return i; }
+  return options.length - 1;
+}
+
+let stepRng = mulberry32(99);
+const BRANCH_COLORS = 6;
+// stepMode: when stepping by hand we treat a period as a normal step and walk
+// ON into the next sentence (period -> opener -> ...), so the user can build as
+// many sentences as they like and the openers ("and"/"yet") actually get used.
+// In play mode (stepMode=false) sampling the period ends the walk after one
+// sentence.
+function doStep(stepMode) {
+  if (!walk || walk.done) return;
+  const maxSteps = MODEL.meta.arbitrary ? 60 : (stepMode ? 200 : 24);
+  if (walk.steps >= maxSteps) { finishWalk("(hit max length)"); return; }
+  const opts = successorsForGen(walk.cur);
+  if (!opts.length) { finishWalk("(dead end: this word was never followed by anything)"); return; }
+  showBranchFor(walk.cur, opts);
+  const pick = sampleOption(opts, stepRng);
+  const chosen = opts[pick];
+  highlightChosenChip(pick);
+
+  if (chosen.kind === "stop") {
+    // Show the period. In play mode this ends the walk (one sentence). In step
+    // mode we keep going: the period is a real graph node, so fall through and
+    // traverse period -> opener into the next sentence.
+    const target = chosen.target;
+    const pos = pickEdgePos(walk.cur, target);
+    setCursor(pos);
+    walk.out.push({ w: target, branch: "stopword" });
+    walk.cur = target; // advance onto the period node
+    walk.lastPos = (pos != null ? pos + 1 : null);
+    walk.steps++;
+    renderOutput();
+    if (!stepMode) { finishWalk(); return; }
+    showBranchFor(walk.cur); // period's choices (the openers)
+    return;
+  }
+  const target = chosen.target;
+  const pos = pickEdgePos(walk.cur, target);
+  setCursor(pos);
+  litGraphEdge(walk.cur, target, pick);
+  walk.out.push({ w: target, branch: "b" + (pick % BRANCH_COLORS) });
+  walk.cur = target;
+  walk.lastPos = (pos != null ? pos + 1 : null);
+  walk.steps++;
+
+  if (pos != null) setCursor(pos + 1);
+  renderOutput();
+  showBranchFor(walk.cur);
+}
+
+// nearest occurrence of edge (u->v) at/after lastPos, so the head moves forward.
+function pickEdgePos(u, v) {
+  const key = u + "\u0001" + v;
+  const positions = MODEL.edgePos.get(key) || MODEL.occ.get(u) || [];
+  if (!positions.length) return null;
+  if (walk.lastPos != null) {
+    const after = positions.find(p => p >= walk.lastPos);
+    if (after != null) return after;
+  }
+  return positions[Math.floor(stepRng() * positions.length)];
+}
+
+function finishWalk(suffix) {
+  walk.done = true;
+  stopTimer();
+  els.play.textContent = "Play";
+  renderOutput(true);
+  const why = suffix || (MODEL.meta.arbitrary
+    ? "(reached a sentence-ending word)"
+    : "(the model sampled the period / stop)");
+  els.branch.innerHTML = `<span class="chip ostop picked">STOP</span><span class="arrow">&mdash; sequence ended ${why}</span>`;
+}
+
+/* ---------- highlight helpers ---------- */
+function clearHighlights() {
+  MODEL.spans.forEach(s => { s.classList.remove("cursor", "occ-faint", "chosen"); for (let k = 0; k < BRANCH_COLORS; k++) s.classList.remove("cand" + k); });
+  if (GRAPH) GRAPH.querySelectorAll(".gedge").forEach(e => e.classList.remove("lit0", "lit1", "fired"));
+  if (GRAPH) GRAPH.querySelectorAll(".gnode").forEach(e => e.classList.remove("active"));
+}
+function setCursor(pos) {
+  MODEL.spans.forEach(s => { s.classList.remove("cursor", "occ-faint", "chosen"); });
+  if (pos == null || !MODEL.spans[pos]) return;
+  const span = MODEL.spans[pos];
+  const word = MODEL.tokens[pos];
+  (MODEL.occ.get(word) || []).forEach(p => MODEL.spans[p] && MODEL.spans[p].classList.add("occ-faint"));
+  span.classList.remove("occ-faint");
+  span.classList.add("cursor", "chosen");
+  span.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
+  if (MODEL.meta.arbitrary) {
+    renderLocalGraph(word); // local neighborhood follows the head
+  } else if (GRAPH) {
+    GRAPH.querySelectorAll(".gnode").forEach(e => e.classList.remove("active"));
+    const g = GRAPH.querySelector(`g[data-w="${cssEsc(word)}"] .gnode`);
+    if (g) g.classList.add("active");
+  }
+}
+
+function litGraphEdge(u, v, pick) {
+  if (!GRAPH) return;
+  GRAPH.querySelectorAll(".gedge").forEach(e => e.classList.remove("fired"));
+  const e = GRAPH.querySelector(`.gedge[data-u="${cssEsc(u)}"][data-v="${cssEsc(v)}"]`);
+  if (e) e.classList.add("fired");
+}
+function showBranchFor(word, opts) {
+  const options = opts || successorsForGen(word);
+  // sort by weight desc so the likeliest continuation reads first; cap chips.
+  const shown = options.map((o, i) => ({ o, i }))
+    .sort((a, b) => b.o.weight - a.o.weight).slice(0, 8);
+  const total = options.reduce((a, o) => a + o.weight, 0) || 1;
+  let html = `<span class="chip from">${displayWord(word)}</span><span class="arrow">&rarr;</span>`;
+  shown.forEach(({ o, i }) => {
+    const cls = o.kind === "stop" ? "ostop" : "o" + (i % BRANCH_COLORS);
+    const pct = MODEL.meta.arbitrary ? ` <small>${Math.round(100 * o.weight / total)}%</small>` : "";
+    html += `<span class="chip ${cls}" data-i="${i}">${displayWord(o.label)}${pct}</span>`;
+  });
+  if (options.length > shown.length) html += `<span class="arrow">+${options.length - shown.length} more</span>`;
+  els.branch.innerHTML = html;
+  // light candidate words in the training text (only in designed mode, where
+  // the vocab is small enough that all-occurrence highlighting is legible).
+  MODEL.spans.forEach(s => { for (let k = 0; k < BRANCH_COLORS; k++) s.classList.remove("cand" + k); });
+  if (!MODEL.meta.arbitrary) {
+    options.forEach((o, i) => {
+      if (o.kind !== "real") return;
+      (MODEL.occ.get(o.target) || []).forEach(p => MODEL.spans[p] && MODEL.spans[p].classList.add("cand" + (i % BRANCH_COLORS)));
+    });
+  }
+}
+
+function highlightChosenChip(i) {
+  const chips = els.branch.querySelectorAll(".chip[data-i]");
+  if (chips[i]) chips[i].classList.add("picked");
+}
+function renderOutput(done) {
+  let html = "";
+  walk.out.forEach((o, i) => {
+    const cls = o.branch; // "start" | "b0".."b5" | "stopword"
+    // capitalize the first word and any word right after a sentence end
+    const startsSentence = (i === 0) || isSentenceEnd(walk.out[i - 1].w);
+    const txt = startsSentence ? capFirst(displayWord(o.w)) : displayWord(o.w);
+    // a period hugs the previous word (no left margin): "yearns. And"
+    const punct = isSentenceEnd(o.w) ? " punct" : "";
+    html += `<span class="gen ${cls}${punct}">${txt}</span>`;
+  });
+  if (!done && !walk.done) html += `<span class="caret">&#9646;</span>`;
+  els.output.innerHTML = html;
+}
+
+/* ---------- timer / controls ---------- */
+function stopTimer() { if (timer) { clearInterval(timer); timer = null; } }
+function play() {
+  if (walk.done) resetWalk();
+  if (timer) { stopTimer(); els.play.textContent = "Play"; return; }
+  els.play.textContent = "Pause";
+  timer = setInterval(() => {
+    doStep(false); // play mode: a period ends the walk (one sentence)
+    if (walk.done) { stopTimer(); els.play.textContent = "Play"; }
+  }, Number(els.speed.value));
+}
+
+els.play.onclick = play;
+els.step.onclick = () => { stopTimer(); els.play.textContent = "Play"; if (walk.done) resetWalk(); else doStep(true); };
+els.reset.onclick = resetWalk;
+
+// Keyboard shortcuts: Space = play/pause, Enter = step, left/right = speed,
+// up/down = tokens, R = reset, T = randomize. These hijack keys that normally
+// scroll the page (Space, arrows), so they apply ONLY on the demo tabs. On the
+// prose tabs (Method / About / Word sources / References, i.e. body.about-mode)
+// we do nothing, so Space and the arrows scroll the page as usual. Also ignored
+// while typing in a field or behind the password gate.
+document.addEventListener("keydown", (e) => {
+  const t = e.target;
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
+  if (document.body.classList.contains("locked")) return; // password gate up
+  if (document.body.classList.contains("about-mode")) return; // prose tab: let keys scroll
+  if (e.metaKey || e.ctrlKey || e.altKey) return; // leave browser shortcuts alone
+  if (e.key === " ") { e.preventDefault(); els.play.click(); }
+  else if (e.key === "Enter") { e.preventDefault(); els.step.click(); }
+  else if (e.key === "r" || e.key === "R") { e.preventDefault(); els.reset.click(); }
+  else if (e.key === "t" || e.key === "T") { e.preventDefault(); els.regen.click(); }
+  else if (e.key === "ArrowRight") { e.preventDefault(); nudgeSpeed(+1); }
+  else if (e.key === "ArrowLeft") { e.preventDefault(); nudgeSpeed(-1); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); nudgeTokens(+1); }
+  else if (e.key === "ArrowDown") { e.preventDefault(); nudgeTokens(-1); }
+});
+// Arrow-key parameter controls (replacing the old sliders).
+// Left/Right = speed (the timer interval; faster = smaller ms). Up/Down = number
+// of tokens (the Length/vocabulary width 2..8). Both clamp and update the CTA chip.
+const SPEED_STEPS = [1400, 1100, 900, 650, 450, 300, 180]; // ms per step, slow->fast
+function speedIndex() {
+  const v = Number(els.speed.value);
+  let best = 0, bd = 1e9;
+  SPEED_STEPS.forEach((s, i) => { const d = Math.abs(s - v); if (d < bd) { bd = d; best = i; } });
+  return best;
+}
+function nudgeSpeed(dir) {
+  const i = Math.max(0, Math.min(SPEED_STEPS.length - 1, speedIndex() + dir));
+  els.speed.value = SPEED_STEPS[i];
+  if (timer) { stopTimer(); play(); } // apply new speed live if playing
+}
+function nudgeTokens(dir) {
+  const v = Math.max(2, Math.min(8, Number(els.lenSlider.value) + dir));
+  if (v === Number(els.lenSlider.value)) return;
+  els.lenSlider.value = v;
+  if (SOURCE.kind === "designed") { SOURCE = designedSource(); buildModel(); }
+}
+// Build the designed-mode SOURCE from the current controls (strategy + length).
+const LEN_WORDS = { 2: "fewest", 3: "few", 4: "some", 5: "more", 6: "many", 7: "most", 8: "all" };
+function designedSource() {
+  const width = Number(els.lenSlider.value);
+  return { kind: 'designed', strategy: els.strategy.value, width };
+}
+els.regen.onclick = () => { if (SOURCE.kind !== 'designed') return; seed = (seed * 1103515245 + 12345) & 0x7fffffff; buildModel(); };
+els.strategy.onchange = () => { SOURCE = designedSource(); buildModel(); };
+// On-screen +/- buttons are the click/touch fallback for the arrow keys; they call
+// the same nudge functions so behavior is identical.
+const onClickNudge = (id, fn, dir) => { const b = document.getElementById(id); if (b) b.onclick = () => fn(dir); };
+onClickNudge("tokUp", nudgeTokens, +1);
+onClickNudge("tokDown", nudgeTokens, -1);
+onClickNudge("spdUp", nudgeSpeed, +1);
+onClickNudge("spdDown", nudgeSpeed, -1);
+
+/* ---------- tabs + source inputs ---------- */
+function setActiveTab(name) {
+  document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  document.querySelectorAll('.source-panel').forEach(p => p.classList.toggle('active', p.id === 'sp-' + name));
+  // designed-only controls (strategy, length, new training text) hidden for arbitrary text
+  const designed = (name === 'designed');
+  els.regen.style.display = designed ? '' : 'none';
+  els.strategy.parentElement.style.display = designed ? '' : 'none';
+  // T-to-randomize / up-down-tokens apply only to the designed demo; on real-text
+  // tabs (standard texts, paste) those keys do nothing, so hide the parenthetical
+  // and leave just "Training text".
+  const tk = document.getElementById('trainKeys');
+  if (tk) tk.style.display = designed ? '' : 'none';
+  // the on-screen tokens/speed +/- buttons are designed-mode only (same as the
+  // arrow keys they mirror).
+  document.querySelectorAll('.nudgegroup').forEach(n => { n.style.display = designed ? '' : 'none'; });
+  // The columnar graph and its "part of speech / T to randomize" heading are true
+  // ONLY for the designed lattice. For real text (paste/url/standard) the graph is
+  // a local neighborhood, the columns are not parts of speech, and T does nothing,
+  // so hide the whole graph panel there -- the "Generated language" panel already
+  // carries the idea. Show it only on the designed tab (and on text-input tabs we
+  // leave it hidden until/unless a designed model is active).
+  const showGraph = designed;
+  const gp = document.getElementById('graphpanel');
+  if (gp) gp.style.display = showGraph ? '' : 'none';
+}
+document.querySelectorAll('#tabs button').forEach(b => {
+  b.onclick = () => {
+    setActiveTab(b.dataset.tab);
+    document.body.classList.toggle('about-mode', ['about','sources','words','method'].includes(b.dataset.tab));
+    if (b.dataset.tab === 'designed') { SOURCE = designedSource(); buildModel(); }
+  };
+});
+
+// On the static (Cloudflare Pages) build there is no Python backend, so URL
+// scraping cannot work. build-static.py sets window.STATIC_DEPLOY; when it is on
+// we remove the "From URL(s)" tab and its panel entirely, rather than leaving a
+// dead button. Locally (served by src/server.py) the flag is unset and the tab
+// stays. This is the one thing that flag does, and it now does real work.
+if (window.STATIC_DEPLOY) {
+  document.querySelector('#tabs button[data-tab="url"]')?.remove();
+  document.getElementById('sp-url')?.remove();
+}
+
+// Paste tab
+document.getElementById('pasteGo').onclick = () => {
+  const raw = document.getElementById('pasteText').value.trim();
+  if (!raw) return;
+  SOURCE = { kind: 'text', raw, label: 'pasted text' };
+  buildModel();
+};
+
+// URL tab (needs the backend). On the static build this tab is removed (see the
+// window.STATIC_DEPLOY block above), so urlGo may not exist -- guard the wiring.
+const urlGoBtn = document.getElementById('urlGo');
+if (urlGoBtn) urlGoBtn.onclick = async () => {
+  const blob = document.getElementById('urlList').value.trim();
+  const status = document.getElementById('urlStatus');
+  if (!blob) return;
+  status.textContent = 'fetching...';
+  try {
+    const resp = await fetch('/scrape?urls=' + encodeURIComponent(blob));
+    const data = await resp.json();
+    const okCount = (data.results || []).filter(r => r.ok).length;
+    const fails = (data.results || []).filter(r => !r.ok);
+    if (!data.combined) { status.textContent = 'no text extracted' + (fails.length ? ' (' + fails[0].error + ')' : ''); return; }
+    status.textContent = `fetched ${okCount} page(s), ${data.combined.length} chars` + (fails.length ? `; ${fails.length} failed` : '');
+    SOURCE = { kind: 'text', raw: data.combined, label: 'scraped URLs' };
+    buildModel();
+  } catch (e) {
+    status.textContent = 'Could not reach the scraper. ' + BACKEND_HINT;
+  }
+};
+
+// Standard texts tab. These fetches need the page to be served over http (any
+// server) -- opening index.html from file:// gives no origin to fetch from. On
+// failure we say how to fix it rather than failing quietly. The hint differs by
+// environment: on the hosted static build (window.STATIC_DEPLOY) the texts are
+// plain files served by the CDN, so a failure is a network/cache issue, not a
+// missing backend -- telling the user to "start the backend" there would be wrong.
+const BACKEND_HINT = window.STATIC_DEPLOY
+  ? 'Could not reach the bundled texts (network or cache issue); try reloading the page.'
+  : 'These load when the app is served over http. Run: python3 src/server.py, then open http://localhost:8731/ (not the index.html file directly).';
+async function loadStandardIndex() {
+  try {
+    const resp = await fetch('/dat/index.json');
+    const items = await resp.json();
+    const sel = document.getElementById('stdSelect');
+    sel.innerHTML = items.map(it => `<option value="${it.file}">${it.label}</option>`).join('');
+  } catch (e) {
+    document.getElementById('stdStatus').textContent = BACKEND_HINT;
+  }
+}
+document.getElementById('stdGo').onclick = async () => {
+  const file = document.getElementById('stdSelect').value;
+  const status = document.getElementById('stdStatus');
+  if (!file) { status.textContent = 'No texts loaded. ' + BACKEND_HINT; return; }
+  status.textContent = 'loading...';
+  try {
+    const resp = await fetch('/dat/' + file);
+    const raw = await resp.text();
+    status.textContent = `${raw.length} chars`;
+    SOURCE = { kind: 'text', raw, label: file };
+    buildModel();
+  } catch (e) {
+    status.textContent = BACKEND_HINT;
+  }
+};
+loadStandardIndex();
+
+/* ---- Methods: Shannon-entropy Pareto fronts (vocabulary vs branching) ----
+   Coordinates only: [vocabulary, empirical conditional entropy Hbar in bits/step].
+   The underlying texts (all public domain) are NOT shipped; these frontier points
+   are computed by src/pareto-entropy.py over contiguous whole-sentence excerpts.
+   Hbar = sum_w1 (n(w1)/N) H[p(w2|w1)] -- punishes k=1 and k=0 words. */
+const PARETO_SETS = [
+  { name: "The House That Jack Built (1755)", color: "var(--opt0)",
+    pts: [[8,0.0],[11,0.333],[13,0.594],[15,0.8],[17,0.967],[22,1.099]] },
+  { name: "Aristophanes, The Frogs (405 BC)", color: "var(--accent)",
+    pts: [[3,0.667],[19,0.707]] },
+  { name: "Ring a Ring o' Roses", color: "var(--opt1)",
+    pts: [[3,0.0],[5,0.4],[10,0.482],[14,0.511]] },
+];
+function renderPareto() {
+  const wrap = document.getElementById("paretowrap");
+  if (!wrap) return;
+  const W = 580, H = 360, mL = 48, mR = 14, mT = 14, mB = 106;
+  const all = PARETO_SETS.flatMap(s => s.pts);
+  const xmax = Math.max(...all.map(p => p[0])) + 1;
+  const ymax = Math.max(...all.map(p => p[1])) * 1.08;
+  const px = v => mL + (v / xmax) * (W - mL - mR);
+  const py = v => H - mB - (v / ymax) * (H - mT - mB);
+  const axis = (x1, y1, x2, y2) => `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="var(--line2)" stroke-width="1.2"/>`;
+  let ticks = "";
+  for (let v = 0; v <= xmax; v += 5) ticks += `<line x1="${px(v)}" y1="${py(0)}" x2="${px(v)}" y2="${py(0) + 4}" stroke="var(--line2)"/><text x="${px(v)}" y="${py(0) + 16}" text-anchor="middle">${v}</text>`;
+  for (let v = 0; v <= ymax; v += 0.5) ticks += `<line x1="${mL - 4}" y1="${py(v)}" x2="${mL}" y2="${py(v)}" stroke="var(--line2)"/><text x="${mL - 7}" y="${py(v) + 3}" text-anchor="end">${v.toFixed(1)}</text>`;
+  let curves = "", legend = "";
+  PARETO_SETS.forEach((s, si) => {
+    // A frontier with >=3 points reads as a curve; a sparse 1-2 point set draws
+    // as emphasized markers with a dashed connector, so it does not look like a
+    // stubby broken line (the Frogs chorus is just two extremes: a 3-word refrain
+    // and the verbose lines, with nothing between).
+    const sparse = s.pts.length <= 2;
+    const path = s.pts.map((p, i) => `${i ? "L" : "M"}${px(p[0]).toFixed(1)},${py(p[1]).toFixed(1)}`).join(" ");
+    curves += `<path d="${path}" fill="none" stroke="${s.color}" stroke-width="1.6" opacity="${sparse ? .5 : .85}"${sparse ? ' stroke-dasharray="3 3"' : ''}/>`;
+    for (const [v, h] of s.pts) curves += `<circle cx="${px(v)}" cy="${py(h)}" r="${sparse ? 4 : 2.8}" fill="${s.color}"/>`;
+    // callout on the Frogs low-vocabulary extreme (its 3-word point)
+    if (s.name.includes("Frogs")) {
+      const [v, h] = s.pts[0];
+      curves += `<text x="${px(v) + 8}" y="${py(h) - 5}" fill="${s.color}" font-weight="600">3 words, still branches</text>`;
+    }
+    const ly = py(0) + 52 + si * 15;
+    legend += `<line x1="${mL}" y1="${ly}" x2="${mL + 18}" y2="${ly}" stroke="${s.color}" stroke-width="1.8"${sparse ? ' stroke-dasharray="3 3"' : ''}/>`
+            + `<circle cx="${mL + 9}" cy="${ly}" r="2.8" fill="${s.color}"/>`
+            + `<text x="${mL + 24}" y="${ly + 3}" fill="var(--ink2)">${s.name}</text>`;
+  });
+  const xlab = `<text x="${mL + (W - mL - mR) / 2}" y="${py(0) + 34}" text-anchor="middle" fill="var(--ink2)">vocabulary |{w&#8321;}| (number of distinct words)</text>`;
+  const ylab = `<text transform="translate(12 ${mT + (H - mT - mB) / 2}) rotate(-90)" text-anchor="middle" fill="var(--ink2)">H&#772; bits/step (&uarr; livelier model)</text>`;
+  wrap.innerHTML = `<svg viewBox="0 0 ${W} ${H}" style="max-width:${W}px;width:100%;height:auto" font-family="var(--mono)" font-size="10" fill="var(--muted)">`
+    + axis(mL, py(0), W - mR, py(0)) + axis(mL, py(0), mL, mT) + ticks
+    + curves + xlab + ylab + legend + `</svg>`;
+}
+renderPareto();
+
+/* Replicate the build-stamped "last updated" line to the bottom of EVERY tab, so
+   scrolling to the end of any page shows it (it doubles as a "you reached the
+   bottom" marker). The source of truth is the build-stamped #lastUpdated; we clone
+   its text into a footer in the main .wrap and each .source-panel. */
+(function stampEveryPage() {
+  const src = document.getElementById("lastUpdated");
+  // If the page is served WITHOUT the build having run (e.g. opening index.html
+  // directly, or a dev server serving the source instead of out/site), the
+  // placeholder is still here. Don't show the developer-facing "run the build to
+  // stamp the time" to a viewer: fall back to the document's own Last-Modified
+  // date, labeled as a local/unbuilt copy.
+  if (src && /run the build to stamp/.test(src.textContent)) {
+    let when = "";
+    try {
+      const d = new Date(document.lastModified);
+      if (!isNaN(d)) when = d.toISOString().replace("T", "T").slice(0, 19).replace(/:/g, "-");
+    } catch (e) { /* ignore */ }
+    src.textContent = when ? ("last updated " + when + " (local copy)") : "last updated: local copy";
+  }
+  const text = src ? src.textContent : "";
+  // The demo tabs (designed/paste/url/standard) show their main content in .wrap;
+  // their sp-* panels are just a small input area at the TOP, so a footer there
+  // would land mid-page. Put the footer only in .wrap for those, and in the prose
+  // tabs' own panels. (sp-about already has the original #lastUpdated stamp.)
+  const demoInputPanels = new Set(["sp-designed", "sp-paste", "sp-url", "sp-standard"]);
+  const targets = [document.querySelector(".wrap"), ...document.querySelectorAll(".source-panel")];
+  targets.forEach(t => {
+    if (!t || t.id === "sp-about" || demoInputPanels.has(t.id)) return;
+    const f = document.createElement("p");
+    f.className = "hint pagefooter";
+    f.textContent = text;
+    t.appendChild(f);
+  });
+})();
+
+/* boot */
+buildModel();
+</script>
+</body>
+</html>
