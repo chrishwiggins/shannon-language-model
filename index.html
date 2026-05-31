@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>How a Language Model Walks</title>
+<title>How a (small) language model walks</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231a1d24'/%3E%3Cline x1='9' y1='10' x2='23' y2='10' stroke='%235cc8c0' stroke-width='2'/%3E%3Cline x1='9' y1='10' x2='16' y2='22' stroke='%23f0a868' stroke-width='2'/%3E%3Ccircle cx='9' cy='10' r='3' fill='%23f0a868'/%3E%3Ccircle cx='23' cy='10' r='3' fill='%235cc8c0'/%3E%3Ccircle cx='16' cy='22' r='3' fill='%23b48ce0'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -194,7 +194,11 @@
   th { color: var(--muted); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; font-size: 11px; }
   td.bad { color: var(--bad); font-weight: 600; }
   td.warn { color: var(--warn); font-weight: 600; }
+  .histwrap { display: flex; align-items: flex-end; gap: 8px; }
   .hist { display: flex; gap: 12px; align-items: flex-end; height: 62px; margin: 10px 0 6px; }
+  .histaxis { color: var(--muted); font-size: 11px; }
+  .histaxis-y { line-height: 1.15; text-align: right; padding-bottom: 24px; }
+  .histaxis-x { margin: 2px 0 6px; }
   .bar { width: 34px; background: var(--opt0); border-radius: 1px; position: relative; }
   .bar span { position: absolute; bottom: -19px; left: 0; right: 0; text-align: center; color: var(--muted); font-size: 11px; font-family: var(--mono); }
   .bar b { position: absolute; top: -16px; left: 0; right: 0; text-align: center; font-size: 11px; color: var(--ink); font-family: var(--mono); }
@@ -379,7 +383,7 @@
      server-side auth (e.g. Cloudflare Access or HTTP Basic Auth). -->
 <div id="gate">
   <form id="gateForm">
-    <h2>How a Language Model Walks</h2>
+    <h2>How a (small) language model walks</h2>
     <p>Enter the password to continue.</p>
     <input type="password" id="gatePw" autocomplete="off" autofocus placeholder="password">
     <button type="submit" class="primary">Enter</button>
@@ -641,6 +645,9 @@
        Data Happened: A History from the Age of Reason to the Age of Algorithms</i></a> and the course
        <a href="https://data-ppf.github.io/" target="_blank"><i>Data: Past, Present, and Future</i></a>,
        authored and designed, respectively, with <a href="https://en.wikipedia.org/wiki/Matthew_L._Jones" target="_blank">Matthew L. Jones</a>.</p>
+    <p>Source code (MIT-licensed) is on GitHub:
+       <a href="https://github.com/chrishwiggins/shannon-language-model" target="_blank">github.com/chrishwiggins/shannon-language-model</a>.
+       Clone it and run <code>make</code> to serve the site locally.</p>
     <p class="hint" id="lastUpdated">last updated: run the build to stamp the time</p>
   </div>
 </div>
@@ -761,11 +768,17 @@
 
   <section class="panel full">
     <h2>Self-check &mdash; out-degrees recomputed from the displayed text</h2>
+    <p class="note" style="margin-top:0">A property of the <b>whole training text above</b>, computed once when the text
+      is generated. It does not change as the walk steps; it is checking the text, not your current position.
+      <b>Out-degree</b> = how many different words follow a given word. The check rebuilds the bigram graph straight from
+      the displayed tokens and confirms every word has the out-degree the design promises (in the Designed tabs, two).</p>
     <div id="verdict"></div>
-    <div class="hist" id="hist"></div>
+    <div class="histwrap">
+      <span class="histaxis histaxis-y">how many<br>words</span>
+      <div class="hist" id="hist"></div>
+    </div>
+    <div class="histaxis histaxis-x">out-degree (number of distinct next-words) &rarr;</div>
     <div id="vtable"></div>
-    <div class="note">This recomputes the graph from the emitted tokens (not from how they were built),
-      so a green check means the text you see really does have the property.</div>
   </section>
 
   <section class="panel full" id="ctrlpanel">
