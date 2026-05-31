@@ -1243,8 +1243,12 @@ function coveringWalkEulerian(designed, start, rng, endOn) {
   // reduction because the imbalanced nodes sit on opposite sides of the cycle, so
   // every augmentation path is long regardless of pairing. See doc/nofake-audit.)
   for (let i = 0; i < surplusIn.length; i++) {
-    const path = shortestPath(surplusIn[i], surplusOut[i % surplusOut.length])
-              || shortestPath(surplusOut[i % surplusOut.length], surplusIn[i]);
+    // The augmenting path must run FROM a needs-out node (surplusIn) TO a needs-in
+    // node (surplusOut); that single direction is what reduces both nodes' imbalance.
+    // A reverse path (out->in) would worsen both, so if no forward path exists we skip
+    // rather than add a misdirected one. (On the designed strategies the graph is
+    // strongly connected, so this skip never fires; verified across the test matrix.)
+    const path = shortestPath(surplusIn[i], surplusOut[i % surplusOut.length]);
     if (!path) continue;
     for (let k = 0; k < path.length - 1; k++) adj.get(path[k]).push(path[k + 1]);
   }
@@ -1769,8 +1773,15 @@ function isStopToken(t) {
 function sampleOption(options, rng) {
   const s = options.reduce((a, o) => a + Math.max(o.weight, 0), 0) || 1;
   let r = rng() * s;
-  for (let i = 0; i < options.length; i++) { r -= Math.max(options[i].weight, 0); if (r <= 0) return i; }
-  return options.length - 1;
+  // Only a positive-weight option is selectable: subtract its weight, then return
+  // it once r has gone strictly negative. The `w > 0` guard means a zero-weight
+  // option is never returned even when rng() yields exactly 0 (r starts at 0).
+  let last = -1;
+  for (let i = 0; i < options.length; i++) {
+    const w = Math.max(options[i].weight, 0);
+    if (w > 0) { last = i; r -= w; if (r < 0) return i; }
+  }
+  return last >= 0 ? last : options.length - 1;
 }
 
 let stepRng = mulberry32(99);
@@ -1830,7 +1841,11 @@ function pickEdgePos(u, v) {
     const after = positions.find(p => p >= walk.lastPos);
     if (after != null) return after;
   }
-  return positions[Math.floor(stepRng() * positions.length)];
+  // Past every occurrence of this edge in the finite text: wrap to the FIRST one
+  // (positions is in text order) rather than jumping to a random earlier spot, so
+  // the reading head always reads forward, looping back to the top to reuse an
+  // edge instead of leaping backward mid-text.
+  return positions[0];
 }
 
 function finishWalk(suffix) {

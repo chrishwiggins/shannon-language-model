@@ -80,10 +80,13 @@ def _ip_is_public(ip_str: str) -> bool:
                 or ip.is_multicast or ip.is_reserved or ip.is_unspecified)
 
 
-def validate_public_url(url: str) -> str:
-    """Reject any URL that is not an http/https request to a public host. Resolves
-    the hostname and checks EVERY address it maps to, so a name that resolves to a
-    private IP (DNS-rebinding style) is blocked. Returns the URL unchanged if safe."""
+def validate_public_url(url):
+    """Reject any URL that is not an http/https request to a public host, and return
+    the (host, [validated public IPs]) for that URL. Resolving here and PINNING the
+    result for the connection is what defeats DNS rebinding: without the pin, urllib
+    would resolve the name a second time at connect, and a malicious resolver could
+    return a public IP now and a private one then. The caller connects only to one of
+    the returned IPs."""
     parts = urlparse(url)
     if parts.scheme not in ALLOWED_SCHEMES:
         raise UnsafeURLError(f"scheme not allowed: {parts.scheme or '(none)'}")
@@ -102,20 +105,49 @@ def validate_public_url(url: str) -> str:
     for addr in addrs:
         if not _ip_is_public(addr):
             raise UnsafeURLError(f"host {host!r} resolves to non-public address {addr}")
-    return url
+    return host, sorted(addrs)
 
 
-def fetch(url: str, timeout: int = 15) -> str:
-    """Fetch a URL's body as text, enforcing the SSRF guard on the initial URL and
-    on every redirect hop, and capping the number of bytes read."""
+def _pinned_opener(host, ip):
+    """An opener whose http/https connections go to a fixed, already-validated IP,
+    while keeping the original hostname for the Host header and TLS SNI. This removes
+    the second DNS lookup, closing the resolve-then-connect rebinding window."""
+    import http.client
+    import ssl
+
+    ctx = ssl.create_default_context()
+
+    class PinnedHTTPConnection(http.client.HTTPConnection):
+        def connect(self):
+            self.sock = socket.create_connection((ip, self.port), self.timeout)
+
+    class PinnedHTTPSConnection(http.client.HTTPSConnection):
+        def connect(self):
+            sock = socket.create_connection((ip, self.port), self.timeout)
+            # server_hostname keeps SNI + cert validation against the real name.
+            self.sock = ctx.wrap_socket(sock, server_hostname=host)
+
+    class PinnedHTTPHandler(urllib.request.HTTPHandler):
+        def http_open(self, req):
+            return self.do_open(PinnedHTTPConnection, req)
+
+    class PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+        def https_open(self, req):
+            return self.do_open(PinnedHTTPSConnection, req)
+
+    return urllib.request.build_opener(_NoRedirect, PinnedHTTPHandler, PinnedHTTPSHandler)
+
+
+def fetch(url, timeout=15):
+    """Fetch a URL's body as text. Enforces the SSRF guard on the initial URL and on
+    every redirect hop, connects only to the validated IP (anti-rebinding), and caps
+    the bytes read."""
     current = url
     for _ in range(MAX_REDIRECTS + 1):
-        validate_public_url(current)
+        host, ips = validate_public_url(current)
+        opener = _pinned_opener(host, ips[0])  # connect to a validated IP only
         req = urllib.request.Request(current, headers={"User-Agent": USER_AGENT},
                                      method="GET")
-        # NoRedirect: handle redirects ourselves so each Location is re-validated
-        # (urllib's default handler would follow them straight past the guard).
-        opener = urllib.request.build_opener(_NoRedirect)
         try:
             resp = opener.open(req, timeout=timeout)
         except urllib.error.HTTPError as exc:
@@ -158,7 +190,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
+        # No wildcard CORS: the app is same-origin with this server, so it never needs
+        # cross-origin access. Dropping "Access-Control-Allow-Origin: *" stops a
+        # malicious third-party page from reading /scrape results in the user's
+        # browser (the cross-origin half of the SSRF attack surface).
         self.end_headers()
         self.wfile.write(body)
 
