@@ -10,13 +10,16 @@ fetching cross-origin URLs and parsing their HTML to readable text.
 Run:  python3 src/server.py   then open  http://localhost:8731/
 """
 
+import ipaddress
 import json
 import re
+import socket
 import sys
+import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urljoin, urlparse, parse_qs
 
 try:
     from bs4 import BeautifulSoup
@@ -53,15 +56,94 @@ def html_to_text(html: str) -> str:
     return "\n".join(lines)
 
 
-def fetch(url: str, timeout: int = 15) -> str:
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        charset = resp.headers.get_content_charset() or "utf-8"
-        raw = resp.read()
+# --- SSRF guard ---------------------------------------------------------------
+# This server fetches URLs the user types. Without a guard, a user (or a page that
+# redirects) could point it at internal hosts: the cloud metadata endpoint
+# (169.254.169.254), loopback, or RFC1918 LAN addresses. We therefore (1) allow only
+# http/https, (2) resolve the hostname and reject any non-global IP, (3) follow
+# redirects manually, re-validating each hop, and (4) cap the bytes read.
+ALLOWED_SCHEMES = ("http", "https")
+MAX_FETCH_BYTES = 5 * 1024 * 1024  # 5 MB: enough for prose, bounds memory
+MAX_REDIRECTS = 5
+
+
+class UnsafeURLError(ValueError):
+    """Raised when a URL targets a non-public address or a disallowed scheme."""
+
+
+def _ip_is_public(ip_str: str) -> bool:
+    """True only for globally-routable unicast addresses. Rejects loopback,
+    link-local (incl. the 169.254.169.254 metadata IP), private, reserved, and
+    multicast ranges, for both IPv4 and IPv6."""
+    ip = ipaddress.ip_address(ip_str)
+    return not (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_multicast or ip.is_reserved or ip.is_unspecified)
+
+
+def validate_public_url(url: str) -> str:
+    """Reject any URL that is not an http/https request to a public host. Resolves
+    the hostname and checks EVERY address it maps to, so a name that resolves to a
+    private IP (DNS-rebinding style) is blocked. Returns the URL unchanged if safe."""
+    parts = urlparse(url)
+    if parts.scheme not in ALLOWED_SCHEMES:
+        raise UnsafeURLError(f"scheme not allowed: {parts.scheme or '(none)'}")
+    host = parts.hostname
+    if not host:
+        raise UnsafeURLError("no host in URL")
     try:
-        return raw.decode(charset, errors="replace")
-    except LookupError:
-        return raw.decode("utf-8", errors="replace")
+        infos = socket.getaddrinfo(host, parts.port or
+                                   (443 if parts.scheme == "https" else 80),
+                                   proto=socket.IPPROTO_TCP)
+    except socket.gaierror as exc:
+        raise UnsafeURLError(f"cannot resolve host {host!r}: {exc}") from exc
+    addrs = {info[4][0] for info in infos}
+    if not addrs:
+        raise UnsafeURLError(f"host {host!r} resolved to no addresses")
+    for addr in addrs:
+        if not _ip_is_public(addr):
+            raise UnsafeURLError(f"host {host!r} resolves to non-public address {addr}")
+    return url
+
+
+def fetch(url: str, timeout: int = 15) -> str:
+    """Fetch a URL's body as text, enforcing the SSRF guard on the initial URL and
+    on every redirect hop, and capping the number of bytes read."""
+    current = url
+    for _ in range(MAX_REDIRECTS + 1):
+        validate_public_url(current)
+        req = urllib.request.Request(current, headers={"User-Agent": USER_AGENT},
+                                     method="GET")
+        # NoRedirect: handle redirects ourselves so each Location is re-validated
+        # (urllib's default handler would follow them straight past the guard).
+        opener = urllib.request.build_opener(_NoRedirect)
+        try:
+            resp = opener.open(req, timeout=timeout)
+        except urllib.error.HTTPError as exc:
+            if exc.code in (301, 302, 303, 307, 308):
+                loc = exc.headers.get("Location")
+                if not loc:
+                    raise UnsafeURLError("redirect with no Location") from exc
+                current = urljoin(current, loc)
+                continue
+            raise
+        with resp:
+            charset = resp.headers.get_content_charset() or "utf-8"
+            raw = resp.read(MAX_FETCH_BYTES + 1)
+        if len(raw) > MAX_FETCH_BYTES:
+            raise UnsafeURLError(f"response exceeds {MAX_FETCH_BYTES} bytes")
+        try:
+            return raw.decode(charset, errors="replace")
+        except LookupError:
+            return raw.decode("utf-8", errors="replace")
+    raise UnsafeURLError(f"too many redirects (> {MAX_REDIRECTS})")
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Turn 3xx responses into HTTPError instead of auto-following them, so fetch()
+    can re-run the SSRF guard on the redirect target before continuing."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 class Handler(BaseHTTPRequestHandler):
