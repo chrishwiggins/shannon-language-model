@@ -399,10 +399,10 @@
 
 <nav class="tabs" id="tabs">
   <div class="tabrow">
-    <button data-tab="designed" class="active">Designed text</button>
+    <button data-tab="designed">Designed text</button>
     <button data-tab="paste">Write (or paste) your own text</button>
     <button data-tab="url">From URL(s)</button>
-    <button data-tab="standard">Standard texts</button>
+    <button data-tab="standard" class="active">Standard texts</button>
   </div>
   <div class="tabrow">
     <button data-tab="method">Method</button>
@@ -412,7 +412,7 @@
   </div>
 </nav>
 
-<div class="source-panel active" id="sp-designed"></div>
+<div class="source-panel" id="sp-designed"></div>
 
 <div class="source-panel" id="sp-paste">
   <p class="hint">Paste/write any text. It is analyzed as-is: the real bigram graph is built with frequencies, and the walk samples likelier continuations more often. Out-degrees vary wildly, the opposite of the designed demo's uniform branching.</p>
@@ -426,7 +426,7 @@
   <div class="row"><button id="urlGo" class="primary">Fetch &amp; analyze</button><span id="urlStatus"></span></div>
 </div>
 
-<div class="source-panel" id="sp-standard">
+<div class="source-panel active" id="sp-standard">
   <p class="hint">Text excerpts bundled with the app. Pick one to build its real bigram graph and walk it. <i>Eugene Onegin</i> is the text Andrey Markov used in 1913 for the first Markov chain &mdash; see the About / History tab.</p>
   <div class="row">
     <label>Text <select id="stdSelect"></select></label>
@@ -2093,7 +2093,8 @@ document.getElementById('stdGo').onclick = async () => {
     status.textContent = BACKEND_HINT;
   }
 };
-loadStandardIndex();
+// (the catalog is loaded by bootHamlet() at the end of the script, which awaits it
+// before selecting Hamlet; no separate call needed here.)
 
 /* ---- Methods: Shannon-entropy Pareto fronts (vocabulary vs branching) ----
    Coordinates only: [vocabulary, empirical conditional entropy Hbar in bits/step].
@@ -2202,8 +2203,30 @@ renderPareto();
   });
 })();
 
-/* boot */
-buildModel();
+/* boot: open on the Standard-texts tab with Hamlet already loaded and analyzed,
+   so a first-time visitor lands on real text (not the designed demo). Falls back
+   to the designed model if the bundled text cannot be fetched (e.g. opened from
+   file:// with no origin). */
+(async function bootHamlet() {
+  const FALLBACK = () => { SOURCE = designedSource(); setActiveTab('designed'); buildModel(); };
+  try {
+    await loadStandardIndex(); // populate #stdSelect
+    const sel = document.getElementById('stdSelect');
+    const file = 'shakespeare-hamlet.txt';
+    if (![...sel.options].some(o => o.value === file)) return FALLBACK();
+    sel.value = file;
+    const resp = await fetch('/dat/' + file);
+    if (!resp.ok) return FALLBACK();
+    const raw = await resp.text();
+    document.getElementById('stdStatus').textContent = `${raw.length} chars`;
+    SOURCE = { kind: 'text', raw, label: file };
+    setActiveTab('standard');
+    document.body.classList.remove('about-mode');
+    buildModel();
+  } catch (e) {
+    FALLBACK();
+  }
+})();
 </script>
 </body>
 </html>
