@@ -388,19 +388,9 @@
 </style>
 </head>
 <body>
-<!-- Password gate. NOTE: this is client-side obfuscation, NOT real security.
-     The password ships to the browser; anyone can read it in the page source.
-     It keeps casual visitors out, nothing more. For real protection use
-     server-side auth (e.g. Cloudflare Access or HTTP Basic Auth). -->
-<div id="gate">
-  <form id="gateForm">
-    <h2>How a (small) language model walks</h2>
-    <p>Enter the password to continue.</p>
-    <input type="password" id="gatePw" autocomplete="off" autofocus placeholder="password">
-    <button type="submit" class="primary">Enter</button>
-    <div id="gateErr"></div>
-  </form>
-</div>
+<!-- Password gate removed: the site is public. (Earlier it was behind a
+     client-side password as obfuscation only; the markup and the locking script
+     below have been disabled so the page is open to everyone.) -->
 
 <header>
   <h1>How a (small) language model walks through its training text</h1>
@@ -821,27 +811,9 @@
 </div>
 
 <script>
-/* Password gate (client-side obfuscation only -- see note in markup). */
-(function () {
-  var PASSWORD = "monday";
-  var KEY = "llmwalk-unlocked";
-  document.body.classList.add("locked");
-  function unlock() {
-    document.getElementById("gate").classList.add("hidden");
-    document.body.classList.remove("locked");
-  }
-  if (sessionStorage.getItem(KEY) === "1") { unlock(); }
-  document.addEventListener("DOMContentLoaded", function () {
-    var form = document.getElementById("gateForm");
-    if (!form) return;
-    form.addEventListener("submit", function (e) {
-      e.preventDefault();
-      var pw = document.getElementById("gatePw").value;
-      if (pw === PASSWORD) { sessionStorage.setItem(KEY, "1"); unlock(); }
-      else { document.getElementById("gateErr").textContent = "Incorrect password."; }
-    });
-  });
-})();
+/* Password gate disabled: the site is public, so the page is never locked.
+   (The gate was client-side obfuscation only. Left as a no-op rather than
+   deleted so it is easy to restore if the site ever needs to be sealed again.) */
 </script>
 <script>
 "use strict";
