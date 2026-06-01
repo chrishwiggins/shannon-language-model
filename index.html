@@ -350,6 +350,12 @@
     /* finger-sized targets (>= 44px) for every control */
     #controls button, .source-panel button { padding: 11px 16px; min-height: 44px; }
     #controls select, .source-panel select, .source-panel input[type=text] { min-height: 44px; padding: 9px 12px; }
+    /* source-panel input rows stack on a phone so the dropdown + button + status
+       each take a full-width line instead of overflowing off the right edge. */
+    .source-panel .row { flex-direction: column; align-items: stretch; gap: 8px; }
+    .source-panel .row > * { width: 100%; box-sizing: border-box; }
+    .source-panel .row label { display: flex; flex-direction: column; gap: 4px; }
+    .source-panel .row label select { width: 100%; }
     #controls label { font-size: 13.5px; }
     input[type=range] { width: 100%; min-width: 140px; height: 28px; }
     /* sliders get their own full-width rows so the thumb is easy to grab */
