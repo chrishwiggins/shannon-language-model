@@ -5,7 +5,7 @@ A bigram model is a map (each word points to the words seen right after it); gen
 text is a random walk over that map. The app animates the walk, moving a reading head
 through the training text one word at a time as each next word is sampled.
 
-**Live demo:** https://shannon-language-model.pages.dev (password: `monday`)
+**Live demo:** https://shannon.chrishwiggins.com
 
 ## What it shows
 
