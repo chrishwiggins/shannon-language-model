@@ -362,6 +362,9 @@
     #controls label:has(input[type=range]) { flex: 1 1 100%; }
     #controls select { flex: 1 1 100%; }
     .source-panel { padding: 14px; }
+    /* the footer "code" link gets a bigger touch area on a phone (it is a small
+       inline link otherwise). Extra vertical padding, no layout shift. */
+    .pagefooter .codelink, #lastUpdated .codelink { padding: 6px 4px; display: inline-block; }
 
     /* keyboard legend is desktop-only guidance; on a touch device there is no
        keyboard, so reclaim the space. (The on-screen buttons do the same jobs.) */
@@ -1920,6 +1923,7 @@ function renderOutput(done) {
 /* ---------- timer / controls ---------- */
 function stopTimer() { if (timer) { clearInterval(timer); timer = null; } }
 function play() {
+  if (!walk) return; // model not built yet (e.g. during the async first load)
   if (walk.done) resetWalk();
   if (timer) { stopTimer(); els.play.textContent = "Play"; return; }
   els.play.textContent = "Pause";
@@ -1930,7 +1934,7 @@ function play() {
 }
 
 els.play.onclick = play;
-els.step.onclick = () => { stopTimer(); els.play.textContent = "Play"; if (walk.done) resetWalk(); else doStep(true); };
+els.step.onclick = () => { if (!walk) return; stopTimer(); els.play.textContent = "Play"; if (walk.done) resetWalk(); else doStep(true); };
 els.reset.onclick = resetWalk;
 
 // Keyboard shortcuts: Space = play/pause, Enter = step, left/right = speed,
