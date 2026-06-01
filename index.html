@@ -249,7 +249,8 @@
   .tok.cand4{box-shadow:inset 0 0 0 2px #9a2f5c;} .tok.cand5{box-shadow:inset 0 0 0 2px #5a6b14;}
 
   /* ---- tabs: a journal contents bar ---- */
-  nav.tabs { display:flex; gap:2px; padding: 0 40px; border-bottom:2px solid var(--ink); flex-wrap:wrap; background: var(--bg2); }
+  nav.tabs { display:flex; flex-direction:column; align-items:center; gap:2px; padding: 4px 40px 0; border-bottom:2px solid var(--ink); background: var(--bg2); }
+  nav.tabs .tabrow { display:flex; gap:2px; justify-content:center; flex-wrap:wrap; }
   nav.tabs button { background:transparent; border:none; border-bottom:3px solid transparent; border-radius:0; color:var(--muted); padding:11px 15px; font-size:13px; font-family:var(--mono); letter-spacing:.02em; transition: color .12s, border-color .12s; }
   nav.tabs button.active { color:var(--accent); border-bottom-color:var(--accent); font-weight:600; }
   nav.tabs button:hover { color:var(--ink); background: var(--panel); }
@@ -333,14 +334,17 @@
        The wrapper still allows a pan as a fallback for very wide lattices. */
     #graphwrap svg { width: 100%; height: auto; }
 
-    /* tab bar: a single horizontally-scrollable strip, not a 3-row block.
-       Momentum scroll on iOS; snap each tab; hide the scrollbar. */
-    nav.tabs {
-      flex-wrap: nowrap; overflow-x: auto; padding: 0 14px;
+    /* tab bar on mobile: keep the two centered rows, but let each row scroll
+       horizontally if it overflows. Momentum scroll on iOS; snap each tab; hide
+       the scrollbar. */
+    nav.tabs { padding: 4px 0 0; }
+    nav.tabs .tabrow {
+      flex-wrap: nowrap; overflow-x: auto; max-width: 100%; padding: 0 14px;
+      justify-content: flex-start;
       -webkit-overflow-scrolling: touch; scroll-snap-type: x proximity;
       scrollbar-width: none;
     }
-    nav.tabs::-webkit-scrollbar { display: none; }
+    nav.tabs .tabrow::-webkit-scrollbar { display: none; }
     nav.tabs button { flex: 0 0 auto; white-space: nowrap; padding: 12px 13px; scroll-snap-align: start; }
 
     /* finger-sized targets (>= 44px) for every control */
@@ -404,14 +408,18 @@
 </header>
 
 <nav class="tabs" id="tabs">
-  <button data-tab="designed" class="active">Designed text</button>
-  <button data-tab="paste">Write (or paste) your own text</button>
-  <button data-tab="url">From URL(s)</button>
-  <button data-tab="standard">Standard texts</button>
-  <button data-tab="method">Method</button>
-  <button data-tab="about">About / History</button>
-  <button data-tab="words">Word sources</button>
-  <button data-tab="sources">References</button>
+  <div class="tabrow">
+    <button data-tab="designed" class="active">Designed text</button>
+    <button data-tab="paste">Write (or paste) your own text</button>
+    <button data-tab="url">From URL(s)</button>
+    <button data-tab="standard">Standard texts</button>
+  </div>
+  <div class="tabrow">
+    <button data-tab="method">Method</button>
+    <button data-tab="about">About / History</button>
+    <button data-tab="words">Word sources</button>
+    <button data-tab="sources">References</button>
+  </div>
 </nav>
 
 <div class="source-panel active" id="sp-designed"></div>
@@ -626,7 +634,7 @@
        1955 proposal for the 1956 <a href="https://en.wikipedia.org/wiki/Dartmouth_workshop" target="_blank">Dartmouth
        summer workshop on artificial intelligence</a> (which Shannon co-authored).</p>
 
-    <h3>McCarthy, Shannon, and the name</h3>
+    <h3>McCarthy, Shannon, and the &ldquo;AI&rdquo;: the brand</h3>
     <p>The man who coined <i>artificial intelligence</i>, <a href="https://en.wikipedia.org/wiki/John_McCarthy_(computer_scientist)" target="_blank">John
        McCarthy</a> &mdash; a Princeton mathematics instructor, having taken his PhD there in 1951 &mdash;
        spent the summer of 1952 working with Shannon at Bell Labs, where the two went on to co-edit
