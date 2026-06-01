@@ -125,6 +125,13 @@
   .chip.o1 { border-color: var(--opt1); color: var(--opt1); }
   .chip.ostop { border-color: var(--stop); color: var(--stop); }
   .chip.picked { box-shadow: 0 0 0 2px currentColor; font-weight: 700; }
+  /* tappable chips: a candidate chip picks that word as the next step; the
+     current-word chip (.from) takes a random step. */
+  .chip[data-i], .chip.from { cursor: pointer; transition: background .1s, box-shadow .1s, filter .1s; }
+  .chip[data-i]:hover { background: var(--panel); box-shadow: 0 0 0 1px currentColor; }
+  .chip[data-i]:active { background: var(--bg2); }
+  .chip.from:hover { filter: brightness(1.12); }
+  .chip.from:active { filter: brightness(0.92); }
   .arrow { color: var(--muted); font-family: var(--mono); }
 
   /* ---- controls: a brass-instrument console row ---- */
@@ -183,6 +190,11 @@
     font-size: 10px; padding: 1px 5px; min-width: 14px; border-bottom-width: 1px;
     text-transform: none; letter-spacing: 0; vertical-align: middle;
   }
+  /* tappable keyboard glyphs in the "Generated language" heading: a phone user can
+     tap them to drive the walk (step / play-pause / slower / faster). */
+  kbd.keytap { cursor: pointer; transition: background .1s, box-shadow .1s; }
+  kbd.keytap:hover { background: linear-gradient(#fff, #e3d8c2); box-shadow: 0 0 0 2px var(--accent); }
+  kbd.keytap:active { background: var(--accent); color: #fbf3ec; }
 
   /* ---- verifier ---- */
   #verdict { font-weight: 600; padding: 9px 13px; border-radius: 2px; margin-bottom: 12px; font-family: var(--mono); font-size: 13.5px; }
@@ -350,6 +362,12 @@
     /* finger-sized targets (>= 44px) for every control */
     #controls button, .source-panel button { padding: 11px 16px; min-height: 44px; }
     #controls select, .source-panel select, .source-panel input[type=text] { min-height: 44px; padding: 9px 12px; }
+    /* tappable chips: bigger touch area + room between them on a phone */
+    #branch { gap: 8px 6px; }
+    .chip[data-i], .chip.from { padding: 10px 14px; font-size: 15px; }
+    /* the tappable keyboard glyphs in the heading need a finger-sized hit area */
+    .panel h2 kbd.keytap { font-size: 14px; padding: 7px 11px; min-width: 22px;
+      display: inline-block; margin: 2px 1px; }
     /* source-panel input rows stack on a phone so the dropdown + button + status
        each take a full-width line instead of overflowing off the right edge. */
     .source-panel .row { flex-direction: column; align-items: stretch; gap: 8px; }
@@ -765,7 +783,7 @@
   </section>
 
   <section class="panel">
-    <h2>Generated language (<kbd>&crarr;</kbd> for next, <kbd>space</kbd> to play/pause, <kbd>&larr;</kbd><kbd>&rarr;</kbd> for slower, faster)</h2>
+    <h2>Generated language (<kbd class="keytap" data-act="step" role="button" tabindex="0" title="Next word">&crarr;</kbd> for next, <kbd class="keytap" data-act="play" role="button" tabindex="0" title="Play / pause">space</kbd> to play/pause, <kbd class="keytap" data-act="slower" role="button" tabindex="0" title="Slower">&larr;</kbd><kbd class="keytap" data-act="faster" role="button" tabindex="0" title="Faster">&rarr;</kbd> for slower, faster)</h2>
     <div id="output"></div>
     <h2 style="margin-top:16px">Next-word choice</h2>
     <div id="branch"></div>
@@ -1778,14 +1796,19 @@ const BRANCH_COLORS = 6;
 // many sentences as they like and the openers ("and"/"yet") actually get used.
 // In play mode (stepMode=false) sampling the period ends the walk after one
 // sentence.
-function doStep(stepMode) {
+// forcedPick: index into opts to take instead of random sampling, used when the
+// user taps a specific next-word chip (a deterministic, hand-picked step). Out-of-
+// range or undefined => sample as usual.
+function doStep(stepMode, forcedPick) {
   if (!walk || walk.done) return;
   const maxSteps = MODEL.meta.arbitrary ? 60 : (stepMode ? 200 : 24);
   if (walk.steps >= maxSteps) { finishWalk("(hit max length)"); return; }
   const opts = successorsForGen(walk.cur);
   if (!opts.length) { finishWalk("(dead end: this word was never followed by anything)"); return; }
   showBranchFor(walk.cur, opts);
-  const pick = sampleOption(opts, stepRng);
+  const pick = (Number.isInteger(forcedPick) && forcedPick >= 0 && forcedPick < opts.length)
+    ? forcedPick
+    : sampleOption(opts, stepRng);
   const chosen = opts[pick];
   highlightChosenChip(pick);
 
@@ -1936,6 +1959,39 @@ function play() {
 els.play.onclick = play;
 els.step.onclick = () => { if (!walk) return; stopTimer(); els.play.textContent = "Play"; if (walk.done) resetWalk(); else doStep(true); };
 els.reset.onclick = resetWalk;
+
+// Tap a chip to step the walk (no keyboard needed). Delegated on #branch because
+// the chips are rebuilt every step:
+// - a candidate chip (data-i = its index in the successor options) forces THAT
+// word as the next step (a hand-picked walk);
+// - the current-word chip (.from) takes a RANDOM step, like pressing Step.
+els.branch.addEventListener("click", (e) => {
+  if (!walk || walk.done) return;
+  const candidate = e.target.closest(".chip[data-i]");
+  const current = e.target.closest(".chip.from");
+  if (!candidate && !current) return;
+  stopTimer(); els.play.textContent = "Play"; // tapping takes manual control
+  doStep(true, candidate ? Number(candidate.dataset.i) : undefined); // undefined => sample
+});
+
+// The keyboard glyphs in the "Generated language" heading are tappable, so a phone
+// user (no keyboard) can drive the walk: the same actions the keys trigger.
+// crarr -> step, space -> play/pause, larr/rarr -> slower/faster.
+// An arrow tap also starts playback if stopped, so the speed change is visible.
+function activateKeytap(act) {
+  if (act === "step") els.step.click();
+  else if (act === "play") els.play.click();
+  else if (act === "slower" || act === "faster") {
+    if (!timer && walk && !walk.done) play(); // start playing so the nudge shows
+    nudgeSpeed(act === "faster" ? +1 : -1);
+  }
+}
+document.querySelectorAll(".keytap").forEach(k => {
+  k.addEventListener("click", () => activateKeytap(k.dataset.act));
+  k.addEventListener("keydown", (e) => { // keyboard a11y for the role=button
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); activateKeytap(k.dataset.act); }
+  });
+});
 
 // Keyboard shortcuts: Space = play/pause, Enter = step, left/right = speed,
 // up/down = tokens, R = reset, T = randomize. These hijack keys that normally
