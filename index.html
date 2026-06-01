@@ -400,7 +400,7 @@
 
 <header>
   <h1>How a (small) language model walks through its training text</h1>
-  <p>A bigram model is just a map: a word usually appears many times in the text, so what follows it is a <i>distribution</i> over next words. Generating text is a random walk over that map; the reading head moves through the training text as each word is sampled and, having writ, moves on. The <b>Designed</b> tab uses text engineered (e.g., so every word has exactly <b>2</b> next-word choices, 3 for sentence-enders) to make the branching visible; a Strategy pulldown offers several such designs. The other tabs analyze <b>real</b> text &mdash; pasted or a public-domain classic &mdash; where out-degrees vary wildly and frequent continuations are likelier.</p>
+  <p>Language models are not magic. They are mathematical games for exploring the text on which they are trained. This particular game, the simplest of them, dates from 1945 (see the <b>About / History</b> tab) and shows two things at once: how much the training text matters, and how a plain random walk through that text can be generative. Start with the <b>Designed</b> tab, then try your own text. Explore and enjoy.</p>
 </header>
 
 <nav class="tabs" id="tabs">
@@ -414,9 +414,7 @@
   <button data-tab="sources">References</button>
 </nav>
 
-<div class="source-panel active" id="sp-designed">
-  <p class="hint">A built-in demo: training text engineered so every word has exactly 2 next-word choices (3 for sentence-enders). Use the Strategy dropdown and "New training text" below.</p>
-</div>
+<div class="source-panel active" id="sp-designed"></div>
 
 <div class="source-panel" id="sp-paste">
   <p class="hint">Paste/write any text. It is analyzed as-is: the real bigram graph is built with frequencies, and the walk samples likelier continuations more often. Out-degrees vary wildly, the opposite of the designed demo's uniform branching.</p>
